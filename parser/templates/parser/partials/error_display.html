@@ -1,0 +1,222 @@
+{% load static %}
+
+<!-- Error Display Partial -->
+<div class="error-display" id="error-display" style="display: none;">
+    <div class="error-content">
+        <div class="error-header">
+            <h3 class="error-title" id="error-title">Error</h3>
+            <button class="error-close" onclick="hideErrorDisplay()">&times;</button>
+        </div>
+        
+        <div class="error-body">
+            <p class="error-message" id="error-message"></p>
+            
+            <div class="error-details" id="error-details" style="display: none;">
+                <h4>Details:</h4>
+                <p id="error-details-text"></p>
+            </div>
+            
+            <div class="error-suggestions" id="error-suggestions" style="display: none;">
+                <h4>Suggestions:</h4>
+                <ul id="error-suggestions-list"></ul>
+            </div>
+            
+            <div class="error-fallback" id="error-fallback" style="display: none;">
+                <h4>Alternative:</h4>
+                <p id="error-fallback-text"></p>
+            </div>
+        </div>
+        
+        <div class="error-actions">
+            <button class="btn btn-secondary" onclick="hideErrorDisplay()">Close</button>
+            <button class="btn btn-primary retry-btn" id="retry-btn" style="display: none;" onclick="retryLastOperation()">
+                <i class="fas fa-redo"></i> Try Again
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+function showErrorDisplay(errorData) {
+    const errorDisplay = document.getElementById('error-display');
+    const errorTitle = document.getElementById('error-title');
+    const errorMessage = document.getElementById('error-message');
+    const errorDetails = document.getElementById('error-details');
+    const errorDetailsText = document.getElementById('error-details-text');
+    const errorSuggestions = document.getElementById('error-suggestions');
+    const errorSuggestionsList = document.getElementById('error-suggestions-list');
+    const errorFallback = document.getElementById('error-fallback');
+    const errorFallbackText = document.getElementById('error-fallback-text');
+    const retryBtn = document.getElementById('retry-btn');
+    
+    // Set error title and message
+    errorTitle.textContent = errorData.error || 'Error';
+    errorMessage.textContent = errorData.message || errorData.details || 'An error occurred';
+    
+    // Show details if available
+    if (errorData.details && errorData.details !== errorData.message) {
+        errorDetailsText.textContent = errorData.details;
+        errorDetails.style.display = 'block';
+    } else {
+        errorDetails.style.display = 'none';
+    }
+    
+    // Show suggestions if available
+    if (errorData.suggestions && errorData.suggestions.length > 0) {
+        errorSuggestionsList.innerHTML = '';
+        errorData.suggestions.forEach(suggestion => {
+            const li = document.createElement('li');
+            li.textContent = suggestion;
+            errorSuggestionsList.appendChild(li);
+        });
+        errorSuggestions.style.display = 'block';
+    } else {
+        errorSuggestions.style.display = 'none';
+    }
+    
+    // Show fallback suggestion if available
+    if (errorData.fallback_suggestion) {
+        errorFallbackText.textContent = errorData.fallback_suggestion;
+        errorFallback.style.display = 'block';
+    } else {
+        errorFallback.style.display = 'none';
+    }
+    
+    // Show retry button if allowed
+    if (errorData.retry_allowed !== false) {
+        retryBtn.style.display = 'inline-block';
+    } else {
+        retryBtn.style.display = 'none';
+    }
+    
+    // Show the error display
+    errorDisplay.style.display = 'flex';
+}
+
+function hideErrorDisplay() {
+    document.getElementById('error-display').style.display = 'none';
+}
+
+function retryLastOperation() {
+    // This will be overridden by specific retry functions
+    location.reload();
+}
+
+// Close error display when clicking outside
+document.getElementById('error-display').addEventListener('click', function(e) {
+    if (e.target === this) {
+        hideErrorDisplay();
+    }
+});
+</script>
+
+<style>
+.error-display {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.error-content {
+    background: white;
+    border-radius: 10px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.error-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 25px 15px;
+    border-bottom: 1px solid #ecf0f1;
+}
+
+.error-title {
+    margin: 0;
+    color: #e74c3c;
+    font-size: 1.3rem;
+}
+
+.error-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: #7f8c8d;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: all 0.3s ease;
+}
+
+.error-close:hover {
+    background-color: #f8f9fa;
+    color: #2c3e50;
+}
+
+.error-body {
+    padding: 20px 25px;
+}
+
+.error-message {
+    color: #2c3e50;
+    margin-bottom: 15px;
+    line-height: 1.5;
+    font-weight: 500;
+}
+
+.error-details,
+.error-suggestions,
+.error-fallback {
+    margin-top: 15px;
+}
+
+.error-details h4,
+.error-suggestions h4,
+.error-fallback h4 {
+    color: #34495e;
+    margin-bottom: 10px;
+    font-size: 1rem;
+}
+
+.error-details p,
+.error-fallback p {
+    color: #7f8c8d;
+    line-height: 1.4;
+    margin: 0;
+}
+
+.error-suggestions ul {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.error-suggestions li {
+    color: #7f8c8d;
+    margin-bottom: 5px;
+    line-height: 1.4;
+}
+
+.error-actions {
+    padding: 15px 25px 20px;
+    border-top: 1px solid #ecf0f1;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+</style>

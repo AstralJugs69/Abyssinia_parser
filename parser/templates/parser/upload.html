@@ -1,0 +1,24 @@
+{% extends 'parser/base.html' %}
+{% load static %}
+
+{% block title %}Upload Document - Bank Document Parser{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'parser/css/upload.css' %}">
+{% endblock %}
+
+{% block content %}
+{% include 'parser/partials/session_info.html' %}
+
+{% if not session_error %}
+    {% include 'parser/partials/upload_form.html' %}
+    {% include 'parser/partials/results_section.html' %}
+    {% include 'parser/partials/documents_table.html' %}
+{% endif %}
+
+{% include 'parser/partials/error_display.html' %}
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'parser/js/upload.js' %}"></script>
+{% endblock %}

@@ -1,0 +1,50 @@
+{% if documents %}
+<div class="documents-section">
+    <h2 style="margin-bottom: 20px; color: #2c3e50;">Your Documents</h2>
+    
+    <table class="documents-table">
+        <thead>
+            <tr>
+                <th>Filename</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Status</th>
+                <th>Uploaded</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for document in documents %}
+            <tr data-document-id="{{ document.id }}">
+                <td>{{ document.filename }}</td>
+                <td>{{ document.get_file_type_display }}</td>
+                <td>{{ document.file_size|filesizeformat }}</td>
+                <td>
+                    <span class="status-badge status-{{ document.processing_status }}">
+                        {{ document.get_processing_status_display }}
+                    </span>
+                </td>
+                <td>{{ document.created_at|date:"M d, Y H:i" }}</td>
+                <td>
+                    <div class="action-buttons">
+                        {% if document.processing_status == 'pending' %}
+                            <button class="action-btn process" onclick="processDocument({{ document.id }})">
+                                Process
+                            </button>
+                        {% elif document.processing_status == 'completed' %}
+                            <button class="action-btn view" onclick="viewResults({{ document.id }})">
+                                View Results
+                            </button>
+                        {% elif document.processing_status == 'failed' %}
+                            <button class="action-btn process" onclick="processDocument({{ document.id }})">
+                                Retry
+                            </button>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}

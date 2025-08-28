@@ -1,0 +1,46 @@
+<div class="upload-section">
+    <h2 style="margin-bottom: 20px; color: #2c3e50;">Upload Document</h2>
+    
+    <form id="upload-form" method="post" enctype="multipart/form-data" data-upload-url="{% url 'upload_ajax' %}">
+        {% csrf_token %}
+        
+        <div class="upload-area" id="upload-area">
+            <div class="upload-icon">📄</div>
+            <div class="upload-text">Drag and drop your file here</div>
+            <div class="upload-hint">or click to browse files</div>
+            <div class="upload-hint">Supported: JPG, PNG, PDF, TXT (Max: 10MB)</div>
+            
+            {{ form.file }}
+            
+            <button type="button" class="upload-button" onclick="document.getElementById('id_file').click()">
+                Choose File
+            </button>
+        </div>
+        
+        <div class="progress-container" id="progress-container">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <div class="progress-text" id="progress-text">Uploading...</div>
+            
+            <div class="processing-steps" id="processing-steps">
+                <div class="step" id="step-upload">
+                    <div class="step-icon pending" id="icon-upload">1</div>
+                    <span>Uploading file to server</span>
+                </div>
+                <div class="step" id="step-extract">
+                    <div class="step-icon pending" id="icon-extract">2</div>
+                    <span>Extracting text from document</span>
+                </div>
+                <div class="step" id="step-parse">
+                    <div class="step-icon pending" id="icon-parse">3</div>
+                    <span>Parsing and structuring data</span>
+                </div>
+                <div class="step" id="step-generate">
+                    <div class="step-icon pending" id="icon-generate">4</div>
+                    <span>Generating output files</span>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>

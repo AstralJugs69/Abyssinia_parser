@@ -1,0 +1,23 @@
+{% if session_error %}
+    <div class="error-message">
+        <strong>Session Error:</strong> {{ session_error }}
+    </div>
+{% else %}
+    <div class="session-info">
+        <h3>Session Status</h3>
+        <div class="session-status">
+            <div>
+                <span class="status-indicator {% if active_sessions < 4 %}active{% else %}warning{% endif %}"></span>
+                Active Sessions: {{ active_sessions }}/4
+            </div>
+            {% if session_created %}
+                <span style="color: #27ae60; font-weight: 500;">✓ Session Created</span>
+            {% endif %}
+        </div>
+        {% if active_sessions >= 3 %}
+            <div class="session-warning" style="margin-top: 10px;">
+                <strong>Notice:</strong> System is approaching capacity. Please complete your work promptly.
+            </div>
+        {% endif %}
+    </div>
+{% endif %}
