@@ -548,3 +548,173 @@ class DocumentUploadViewTest(TestCase):
         data = json.loads(response.content)
         self.assertFalse(data['success'])
         self.assertIn('System is at capacity', data['error'])
+
+
+class DocumentProcessingIntegrationTest(TestCase):
+    """Integration test for complete document processing workflow"""
+    
+    def setUp(self):
+        from django.test import Client
+        self.client = Client()
+        self.session = UserSession.objects.create(session_key='test_integration_session')
+        
+        # Create a test document
+        self.document = ProcessedDocument.objects.create(
+            session=self.session,
+            filename='test_bank_statement.txt',
+            file_type='txt',
+            file_size=1024,
+            processing_status='pending'
+        )
+    
+    @patch('parser.views.SessionService')
+    @patch('parser.services.OCRService')
+    @patch('parser.services.LLMService')
+    @patch('parser.services.DataStructuringService')
+    @patch('parser.services.FileGenerationService')
+    @patch('parser.services.SupabaseStorageService')
+    def test_complete_processing_workflow(self, mock_storage, mock_file_gen, mock_structuring, mock_llm, mock_ocr, mock_session_service):
+        """Test the complete end-to-end processing workflow"""
+        
+        # Mock session service to return our test session
+        mock_session_service.get_or_create_session.return_value = (self.session, False, None)
+        
+        # Mock OCR service
+        mock_ocr_instance = mock_ocr.return_value
+        mock_ocr_instance.process_file.return_value = {
+            'success': True,
+            'text': 'Bank Statement\nAccount: 123456789\nBalance: $1,000.00',
+            'confidence': 0.95,
+            'word_count': 8
+        }
+        
+        # Mock LLM service
+        mock_llm_instance = mock_llm.return_value
+        mock_llm_instance.parse_banking_document.return_value = {
+            'success': True,
+            'data': {
+                'account_number': '123456789',
+                'balance': '$1,000.00',
+                'document_type': 'bank_statement'
+            }
+        }
+        
+        # Mock data structuring service
+        mock_structuring_instance = mock_structuring.return_value
+        mock_structuring_instance.structure_banking_data.return_value = {
+            'success': True,
+            'data': {
+                'personal_info': {'name': 'John Doe'},
+                'financial_data': {'account_number': '123456789', 'balance': '$1,000.00'},
+                'dates': {'document_date': '2024-01-01'},
+                'identifiers': {'reference_numbers': ['REF123']}
+            }
+        }
+        
+        # Mock file generation service
+        mock_file_gen_instance = mock_file_gen.return_value
+        mock_file_gen_instance.generate_all_formats.return_value = {
+            'success': True,
+            'files': {
+                'excel': {'path': '/tmp/test.xlsx', 'filename': 'test.xlsx'},
+                'pdf': {'path': '/tmp/test.pdf', 'filename': 'test.pdf'},
+                'doc': {'path': '/tmp/test.docx', 'filename': 'test.docx'}
+            }
+        }
+        
+        # Mock storage service for file retrieval and upload
+        mock_storage_instance = mock_storage.return_value
+        mock_storage_instance.get_file_content.return_value = b'test file content'
+        mock_storage_instance.upload_file.return_value = {
+            'success': True,
+            'file_path': 'session/uploaded_file.xlsx'
+        }
+        
+        # Also mock the storage service class itself for the new instance created in the view
+        mock_storage.return_value.get_file_content.return_value = b'test file content'
+        mock_storage.return_value.upload_file.return_value = {
+            'success': True,
+            'file_path': 'session/uploaded_file.xlsx'
+        }
+        
+        # Mock file existence and reading
+        with patch('os.path.exists', return_value=True), \
+             patch('builtins.open', mock_open(read_data=b'generated file content')), \
+             patch('os.remove'):
+            
+            # Make the processing request
+            response = self.client.post(
+                reverse('process_document'),
+                json.dumps({'document_id': self.document.id}),
+                content_type='application/json',
+                HTTP_X_REQUESTED_WITH='XMLHttpRequest'
+            )
+        
+        # Verify response
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        
+        # Debug: print the actual response if test fails
+        if not data.get('success'):
+            print(f"Test failed with response: {data}")
+        
+        self.assertTrue(data['success'])
+        self.assertEqual(data['message'], 'Document processed successfully')
+        self.assertTrue(data['data']['files_generated'])
+        
+        # Verify document was updated
+        self.document.refresh_from_db()
+        self.assertEqual(self.document.processing_status, 'completed')
+        self.assertIsNotNone(self.document.extracted_data)
+        self.assertIsNotNone(self.document.excel_file_path)
+        self.assertIsNotNone(self.document.pdf_file_path)
+        self.assertIsNotNone(self.document.doc_file_path)
+    
+    def test_get_document_results(self):
+        """Test getting results for a processed document"""
+        # Set up a completed document
+        self.document.processing_status = 'completed'
+        self.document.extracted_data = {
+            'structured_data': {
+                'personal_info': {'name': 'John Doe'},
+                'financial_data': {'balance': '$1,000.00'}
+            },
+            'confidence': 0.9,
+            'processing_method': 'LLM'
+        }
+        self.document.save()
+        
+        # Make request to get results
+        response = self.client.get(reverse('document_results', args=[self.document.id]))
+        
+        # Verify response
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertTrue(data['success'])
+        self.assertEqual(data['document_id'], self.document.id)
+        self.assertIn('results', data)
+        self.assertEqual(data['confidence'], 0.9)
+    
+    @patch('parser.views.SupabaseStorageService')
+    def test_download_file(self, mock_storage):
+        """Test downloading generated files"""
+        # Set up a completed document with file paths
+        self.document.processing_status = 'completed'
+        self.document.excel_file_path = 'session/test.xlsx'
+        self.document.save()
+        
+        # Mock storage service
+        mock_storage_instance = mock_storage.return_value
+        mock_storage_instance.get_file_content.return_value = b'excel file content'
+        
+        # Make download request
+        response = self.client.get(reverse('download_file', args=[self.document.id, 'excel']))
+        
+        # Verify response
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        self.assertIn('attachment', response['Content-Disposition'])
+
+
+# Import mock_open for file mocking
+from unittest.mock import mock_open

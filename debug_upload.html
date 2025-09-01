@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Upload</title>
+</head>
+<body>
+    <h1>Debug Upload Elements</h1>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM loaded');
+            
+            // Check if elements exist
+            const uploadArea = document.getElementById('upload-area');
+            const fileInput = document.getElementById('id_file');
+            const uploadForm = document.getElementById('upload-form');
+            
+            console.log('Upload area:', uploadArea);
+            console.log('File input:', fileInput);
+            console.log('Upload form:', uploadForm);
+            
+            if (!uploadArea) {
+                console.error('Upload area not found!');
+            }
+            if (!fileInput) {
+                console.error('File input not found!');
+            }
+            if (!uploadForm) {
+                console.error('Upload form not found!');
+            }
+            
+            // Test click event
+            if (uploadArea) {
+                uploadArea.addEventListener('click', function() {
+                    console.log('Upload area clicked!');
+                });
+            }
+        });
+    </script>
+</body>
+</html>

@@ -25,12 +25,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-v$=(18#n^r#1hjo&8fcy9+@l0_(l13*&$7=ku5_sjtu7xpy@$s"
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-me")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
-ALLOWED_HOSTS = ['testserver', 'localhost', '127.0.0.1']
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,.railway.app").split(",")
+CSRF_TRUSTED_ORIGINS = os.getenv(
+    "CSRF_TRUSTED_ORIGINS",
+    "http://localhost,http://127.0.0.1,https://*.railway.app",
+).split(",")
 
 
 # Application definition
@@ -55,6 +59,11 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+# Enable WhiteNoise in environments where it's installed and requested
+if os.getenv("USE_WHITENOISE", "False").lower() == "true":
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+    STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
 ROOT_URLCONF = "document_parser.urls"
 
 TEMPLATES = [
@@ -75,45 +84,15 @@ TEMPLATES = [
 WSGI_APPLICATION = "document_parser.wsgi.application"
 
 
-# Database
+# Database (SQLite only for simplified, stateless app)
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-import sys
-
-if 'test' in sys.argv:
-    # Use SQLite for testing
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': ':memory:',
-        }
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
-elif (os.getenv("SUPABASE_DB_HOST") and 
-      os.getenv("SUPABASE_DB_PASSWORD") and 
-      not os.getenv("SUPABASE_DB_HOST").startswith("your_") and
-      not os.getenv("SUPABASE_DB_PASSWORD").startswith("your_")):
-    # Use Supabase PostgreSQL when credentials are available
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.getenv("SUPABASE_DB_NAME", "postgres"),
-            "USER": os.getenv("SUPABASE_DB_USER", "postgres"),
-            "PASSWORD": os.getenv("SUPABASE_DB_PASSWORD"),
-            "HOST": os.getenv("SUPABASE_DB_HOST"),
-            "PORT": os.getenv("SUPABASE_DB_PORT", "5432"),
-            "OPTIONS": {
-                "sslmode": "require",
-            },
-        }
-    }
-else:
-    # Use SQLite for development when Supabase is not configured
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
+}
 
 
 # Password validation
@@ -158,15 +137,8 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# Supabase Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-# OpenAI Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# Gemini Configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyD4z4pJI-lMbSnbVBECFHWFizn958vkt34")
+# Google Gemini API Configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # File Upload Settings
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
@@ -176,6 +148,3 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-# Session Configuration
-SESSION_COOKIE_AGE = 3600  # 1 hour
-SESSION_EXPIRE_AT_BROWSER_CLOSE = True

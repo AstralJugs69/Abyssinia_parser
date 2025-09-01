@@ -6,16 +6,27 @@ import os
 class DocumentUploadForm(forms.Form):
     """Form for uploading documents with validation"""
     
-    ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.pdf', '.txt']
+    ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.pdf']
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB in bytes
     
     file = forms.FileField(
         widget=forms.FileInput(attrs={
             'class': 'file-input',
-            'accept': '.jpg,.jpeg,.png,.pdf,.txt',
-            'id': 'file-upload'
+            'accept': '.jpg,.jpeg,.png,.pdf',
+            'id': 'id_file'
         }),
-        help_text='Supported formats: JPG, PNG, PDF, TXT (Max size: 10MB)'
+        help_text='Supported formats: JPG, PNG, PDF (Max size: 10MB)'
+    )
+
+    OUTPUT_CHOICES = (
+        ('excel', 'Excel (.xlsx)'),
+        ('pdf', 'PDF'),
+    )
+    output_format = forms.ChoiceField(
+        choices=OUTPUT_CHOICES,
+        initial='excel',
+        widget=forms.RadioSelect(attrs={'class': 'output-choice'}),
+        help_text='Choose your preferred output format.'
     )
     
     def clean_file(self):
@@ -47,9 +58,6 @@ class DocumentUploadForm(forms.Form):
         elif file_extension == '.pdf':
             if file.content_type != 'application/pdf':
                 raise ValidationError("Invalid PDF file.")
-        elif file_extension == '.txt':
-            if file.content_type not in ['text/plain', 'text/txt']:
-                raise ValidationError("Invalid text file.")
         
         return file
     
@@ -65,7 +73,5 @@ class DocumentUploadForm(forms.Form):
                 return 'png'
             elif extension == '.pdf':
                 return 'pdf'
-            elif extension == '.txt':
-                return 'txt'
         
         return None

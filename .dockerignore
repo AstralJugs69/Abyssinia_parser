@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# Envs
+.env
+.venv/
+venv/
+.env.*
+
+# VCS
+.git/
+.gitignore
+
+# Django build artifacts
+staticfiles/
+media/
+
+# OS
+.DS_Store
+Thumbs.db

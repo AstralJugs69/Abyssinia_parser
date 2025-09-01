@@ -17,6 +17,34 @@
             </button>
         </div>
         
+        <!-- Output Format Selection -->
+        <div class="output-format-section" id="output-format-section" style="display: none;">
+            <h3 style="margin-bottom: 15px; color: #2c3e50;">Choose Output Formats</h3>
+            <div class="format-options">
+                <label class="format-option">
+                    <input type="checkbox" name="output_formats" value="excel" checked>
+                    <span class="format-icon">📊</span>
+                    <span class="format-name">Excel (.xlsx)</span>
+                    <span class="format-desc">Structured data in spreadsheet format</span>
+                </label>
+                <label class="format-option">
+                    <input type="checkbox" name="output_formats" value="pdf" checked>
+                    <span class="format-icon">📄</span>
+                    <span class="format-name">PDF (.pdf)</span>
+                    <span class="format-desc">Professional document format</span>
+                </label>
+                <label class="format-option">
+                    <input type="checkbox" name="output_formats" value="doc" checked>
+                    <span class="format-icon">📝</span>
+                    <span class="format-name">Word (.docx)</span>
+                    <span class="format-desc">Editable document format</span>
+                </label>
+            </div>
+            <button type="button" class="process-button" id="process-button" onclick="startProcessing()">
+                Process Document
+            </button>
+        </div>
+        
         <div class="progress-container" id="progress-container">
             <div class="progress-bar">
                 <div class="progress-fill" id="progress-fill"></div>

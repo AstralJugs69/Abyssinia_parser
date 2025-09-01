@@ -1,5 +1,7 @@
 // Upload functionality
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM Content Loaded - Upload script starting');
+    
     const uploadArea = document.getElementById('upload-area');
     const fileInput = document.getElementById('id_file');
     const uploadForm = document.getElementById('upload-form');
@@ -7,8 +9,26 @@ document.addEventListener('DOMContentLoaded', function() {
     const progressFill = document.getElementById('progress-fill');
     const progressText = document.getElementById('progress-text');
     
+    console.log('Elements found:', {
+        uploadArea: !!uploadArea,
+        fileInput: !!fileInput,
+        uploadForm: !!uploadForm,
+        progressContainer: !!progressContainer
+    });
+    
+    if (!uploadArea) {
+        console.error('Upload area not found!');
+        return;
+    }
+    if (!fileInput) {
+        console.error('File input not found!');
+        return;
+    }
+    
     // Drag and drop functionality
+    console.log('Setting up drag and drop event listeners');
     uploadArea.addEventListener('dragover', function(e) {
+        console.log('Dragover event triggered');
         e.preventDefault();
         uploadArea.classList.add('dragover');
     });
@@ -30,13 +50,18 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     
     // Click to upload
+    console.log('Setting up click event listener');
     uploadArea.addEventListener('click', function() {
+        console.log('Upload area clicked - triggering file input');
         fileInput.click();
     });
     
     // File input change
+    console.log('Setting up file input change listener');
     fileInput.addEventListener('change', function() {
+        console.log('File input changed, files:', this.files.length);
         if (this.files.length > 0) {
+            console.log('File selected:', this.files[0].name);
             handleFileUpload(this.files[0]);
         }
     });
@@ -88,10 +113,14 @@ document.addEventListener('DOMContentLoaded', function() {
                         showProgress('Upload complete!', 100);
                         showMessage('success', response.message);
                         
-                        // Reset form and reload page after delay
+                        // Store document ID for processing
+                        window.currentDocumentId = response.document_id;
+                        
+                        // Show output format selection
                         setTimeout(function() {
-                            location.reload();
-                        }, 1500);
+                            hideProgress();
+                            showOutputFormatSelection();
+                        }, 1000);
                     } else {
                         hideProgress();
                         handleErrorResponse(response);
@@ -251,7 +280,16 @@ function processDocument(documentId) {
         
         if (data.success) {
             showMessage('success', data.message);
-            setTimeout(() => location.reload(), 1500);
+            
+            // If files were generated, show view results button
+            if (data.data && data.data.files_generated) {
+                button.textContent = 'View Results';
+                button.onclick = () => viewResults(documentId);
+                button.classList.add('btn-success');
+            }
+            
+            // Also reload to show updated status
+            setTimeout(() => location.reload(), 2000);
         } else {
             handleProcessingError(data, button, originalText, documentId);
         }
@@ -361,58 +399,258 @@ function viewResults(documentId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            displayResults(data.results);
+            displayResults(data.results, documentId, data.confidence);
         } else {
-            alert('Error loading results: ' + data.error);
+            showDetailedError('Results Error', 
+                data.error || 'Could not load results',
+                ['Try refreshing the page', 'Check if document processing is complete'],
+                true);
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        alert('Network error occurred');
+        showDetailedError('Network Error', 
+            'Could not connect to the server',
+            ['Check your internet connection', 'Try again in a few minutes'],
+            true);
     });
 }
 
-function displayResults(results) {
+function displayResults(results, documentId, confidence) {
     const resultsSection = document.getElementById('results-section');
     const dataTableBody = document.getElementById('data-table-body');
     
     // Clear existing data
     dataTableBody.innerHTML = '';
     
-    // Populate table with results
+    // Handle different data structures
+    if (results.personal_info || results.financial_data || results.dates || results.identifiers) {
+        // Structured banking data format
+        displayStructuredBankingData(results, dataTableBody);
+    } else {
+        // Generic key-value format
+        displayGenericData(results, dataTableBody);
+    }
+    
+    // Show results section
+    resultsSection.classList.add('show');
+    
+    // Update confidence display
+    const confidenceElement = document.getElementById('overall-confidence');
+    if (confidenceElement) {
+        confidenceElement.textContent = `${Math.round(confidence * 100)}%`;
+        confidenceElement.className = `confidence-score confidence-${getConfidenceLevel(confidence)}`;
+    }
+    
+    // Enable download buttons with document ID
+    const downloadButtons = ['download-excel', 'download-pdf', 'download-doc'];
+    downloadButtons.forEach(buttonId => {
+        const button = document.getElementById(buttonId);
+        if (button) {
+            button.disabled = false;
+            button.onclick = () => downloadFile(documentId, buttonId.replace('download-', ''));
+        }
+    });
+}
+
+function displayStructuredBankingData(results, tableBody) {
+    const sections = [
+        { key: 'personal_info', title: 'Personal Information' },
+        { key: 'financial_data', title: 'Financial Data' },
+        { key: 'dates', title: 'Dates' },
+        { key: 'identifiers', title: 'Identifiers' }
+    ];
+    
+    sections.forEach(section => {
+        if (results[section.key] && Object.keys(results[section.key]).length > 0) {
+            // Add section header
+            const headerRow = document.createElement('tr');
+            headerRow.className = 'section-header';
+            headerRow.innerHTML = `
+                <td colspan="3"><strong>${section.title}</strong></td>
+            `;
+            tableBody.appendChild(headerRow);
+            
+            // Add section data
+            Object.entries(results[section.key]).forEach(([field, value]) => {
+                if (value && value !== '') {
+                    const row = document.createElement('tr');
+                    
+                    const fieldCell = document.createElement('td');
+                    fieldCell.textContent = formatFieldName(field);
+                    
+                    const valueCell = document.createElement('td');
+                    if (Array.isArray(value)) {
+                        valueCell.textContent = value.join(', ') || 'N/A';
+                    } else {
+                        valueCell.textContent = value || 'N/A';
+                    }
+                    
+                    const confidenceCell = document.createElement('td');
+                    confidenceCell.innerHTML = '<span class="confidence-score confidence-medium">85%</span>';
+                    
+                    row.appendChild(fieldCell);
+                    row.appendChild(valueCell);
+                    row.appendChild(confidenceCell);
+                    
+                    tableBody.appendChild(row);
+                }
+            });
+        }
+    });
+}
+
+function displayGenericData(results, tableBody) {
     Object.entries(results).forEach(([field, data]) => {
         const row = document.createElement('tr');
         
         const fieldCell = document.createElement('td');
-        fieldCell.textContent = field;
+        fieldCell.textContent = formatFieldName(field);
         
         const valueCell = document.createElement('td');
-        valueCell.textContent = data.value || 'N/A';
+        if (typeof data === 'object' && data.value !== undefined) {
+            valueCell.textContent = data.value || 'N/A';
+        } else {
+            valueCell.textContent = data || 'N/A';
+        }
         
         const confidenceCell = document.createElement('td');
+        const confidence = (typeof data === 'object' && data.confidence !== undefined) ? data.confidence : 0.85;
         const confidenceSpan = document.createElement('span');
-        confidenceSpan.className = `confidence-score confidence-${getConfidenceLevel(data.confidence)}`;
-        confidenceSpan.textContent = `${Math.round(data.confidence * 100)}%`;
+        confidenceSpan.className = `confidence-score confidence-${getConfidenceLevel(confidence)}`;
+        confidenceSpan.textContent = `${Math.round(confidence * 100)}%`;
         confidenceCell.appendChild(confidenceSpan);
         
         row.appendChild(fieldCell);
         row.appendChild(valueCell);
         row.appendChild(confidenceCell);
         
-        dataTableBody.appendChild(row);
+        tableBody.appendChild(row);
     });
+}
+
+function formatFieldName(field) {
+    return field.replace(/_/g, ' ')
+                .replace(/\b\w/g, l => l.toUpperCase());
+}
+
+function downloadFile(documentId, fileType) {
+    // Create a temporary link to trigger download
+    const link = document.createElement('a');
+    link.href = `/download/${documentId}/${fileType}/`;
+    link.download = ''; // Let the server set the filename
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
     
-    // Show results section
-    resultsSection.classList.add('show');
-    
-    // Enable download buttons
-    document.getElementById('download-excel').disabled = false;
-    document.getElementById('download-pdf').disabled = false;
-    document.getElementById('download-doc').disabled = false;
+    // Show feedback
+    showMessage('success', `${fileType.toUpperCase()} file download started`);
 }
 
 function getConfidenceLevel(confidence) {
     if (confidence >= 0.8) return 'high';
     if (confidence >= 0.6) return 'medium';
     return 'low';
+}
+
+function showOutputFormatSelection() {
+    const outputSection = document.getElementById('output-format-section');
+    const uploadArea = document.getElementById('upload-area');
+    
+    if (outputSection && uploadArea) {
+        uploadArea.style.display = 'none';
+        outputSection.style.display = 'block';
+    }
+}
+
+function startProcessing() {
+    const documentId = window.currentDocumentId;
+    if (!documentId) {
+        showMessage('error', 'No document to process');
+        return;
+    }
+    
+    // Get selected output formats
+    const selectedFormats = [];
+    const formatCheckboxes = document.querySelectorAll('input[name="output_formats"]:checked');
+    formatCheckboxes.forEach(checkbox => {
+        selectedFormats.push(checkbox.value);
+    });
+    
+    if (selectedFormats.length === 0) {
+        showMessage('error', 'Please select at least one output format');
+        return;
+    }
+    
+    // Hide format selection and show processing
+    const outputSection = document.getElementById('output-format-section');
+    const progressContainer = document.getElementById('progress-container');
+    
+    if (outputSection) outputSection.style.display = 'none';
+    if (progressContainer) {
+        progressContainer.style.display = 'block';
+        showProgress('Processing document...', 0);
+    }
+    
+    // Start processing
+    processDocumentWithFormats(documentId, selectedFormats);
+}
+
+function processDocumentWithFormats(documentId, formats) {
+    const button = document.getElementById('process-button');
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Processing...';
+    }
+    
+    // Start status polling
+    const statusInterval = startStatusPolling(documentId);
+    
+    fetch('/process-document/', {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+            document_id: documentId,
+            output_formats: formats
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        clearInterval(statusInterval);
+        
+        if (data.success) {
+            showProgress('Processing complete!', 100);
+            showMessage('success', data.message);
+            
+            // Show results after delay
+            setTimeout(() => {
+                hideProgress();
+                if (data.data && data.data.files_generated) {
+                    viewResults(documentId);
+                } else {
+                    location.reload();
+                }
+            }, 2000);
+        } else {
+            hideProgress();
+            handleProcessingError(data, button, 'Process Document', documentId);
+        }
+    })
+    .catch(error => {
+        clearInterval(statusInterval);
+        console.error('Error:', error);
+        hideProgress();
+        showDetailedError('Network Error', 
+            'Could not connect to the server',
+            ['Check your internet connection', 'Try again in a few minutes'],
+            true);
+        
+        if (button) {
+            button.disabled = false;
+            button.textContent = 'Process Document';
+        }
+    });
 }

@@ -1,0 +1,117 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upload Bank Table</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; color: #0f172a; }
+    .card { max-width: 560px; border: 1px solid #e5e7eb; border-radius: 12px; padding: 1.25rem; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    h1 { font-size: 1.25rem; margin: 0 0 0.5rem 0; }
+    p { color: #475569; margin-top: .25rem; }
+    .errorlist { color: #dc2626; margin: .5rem 0; list-style: none; padding: 0; }
+    .row { margin-top: 1rem; display: flex; gap: .75rem; align-items: center; }
+    input[type=file] { padding: .5rem; border: 1px solid #cbd5e1; border-radius: 8px; width: 100%; }
+    button { background: #0ea5e9; color: white; border: 0; padding: .6rem 1rem; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #0284c7; }
+    small { color: #64748b; }
+
+    /* Loading Overlay */
+    .overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.6); display: none; align-items: center; justify-content: center; z-index: 50; }
+    .overlay.show { display: flex; }
+    .overlay-card { background: white; border-radius: 12px; padding: 1.25rem 1.5rem; width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+    .spinner { width: 28px; height: 28px; border: 3px solid #bae6fd; border-top-color: #0ea5e9; border-radius: 50%; animation: spin 1s linear infinite; }
+    .rowc { display: flex; gap: .75rem; align-items: center; }
+    .muted { color: #64748b; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="loadingOverlay" class="overlay" role="alertdialog" aria-live="polite" aria-label="Processing document">
+    <div class="overlay-card">
+      <div class="rowc">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>
+          <div id="stageTitle"><strong>Preparing upload…</strong></div>
+          <div id="stageDesc" class="muted">Please wait while we process your document.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <h1>Upload bank table image or PDF</h1>
+    <p>We will clean it and return your chosen output.</p>
+
+    <form id="uploadForm" method="post" enctype="multipart/form-data" action="{% url 'process' %}">
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+        <ul class="errorlist">{% for e in form.non_field_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      <div class="row">
+        {{ form.file }}
+      </div>
+      {% if form.file.errors %}
+        <ul class="errorlist">{% for e in form.file.errors %}<li>{{ e }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      <div class="row">
+        {{ form.output_format.label_tag }}
+        {{ form.output_format }}
+      </div>
+      {% if form.output_format.errors %}
+        <ul class="errorlist">{% for e in form.output_format.errors %}<li>{{ e }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      <div class="row">
+        <button type="submit">Process and download</button>
+        <small>{{ form.fields.file.help_text }}</small>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    (function(){
+      const form = document.getElementById('uploadForm');
+      const overlay = document.getElementById('loadingOverlay');
+      const stageTitle = document.getElementById('stageTitle');
+      const stageDesc = document.getElementById('stageDesc');
+      const stages = [
+        { t: 'Uploading…', d: 'Sending your file securely.' },
+        { t: 'Preprocessing image(s)…', d: 'Denoising, upscaling, and sharpening for best OCR.' },
+        { t: 'OCR in progress…', d: 'Extracting text (Tesseract or Gemini Vision).' },
+        { t: 'Structuring with Gemini…', d: 'Cleaning typos, inferring headers, normalizing data.' },
+        { t: 'Exporting…', d: 'Generating Excel/PDF output.' },
+      ];
+      let timer = null;
+      let idx = 0;
+
+      function startOverlay(){
+        overlay.classList.add('show');
+        stageTitle.innerHTML = '<strong>' + stages[0].t + '</strong>';
+        stageDesc.textContent = stages[0].d;
+        idx = 1;
+        timer = setInterval(()=>{
+          const s = stages[idx % stages.length];
+          stageTitle.innerHTML = '<strong>' + s.t + '</strong>';
+          stageDesc.textContent = s.d;
+          idx++;
+        }, 2000);
+      }
+      function stopOverlay(){ if(timer){ clearInterval(timer); timer=null; } overlay.classList.remove('show'); }
+
+      window.addEventListener('beforeunload', stopOverlay);
+
+      form.addEventListener('submit', function(ev){
+        const fileInput = document.getElementById('id_file');
+        if(!fileInput || !fileInput.files || !fileInput.files.length){
+          return; // Let default validation show error
+        }
+        startOverlay();
+      });
+    })();
+  </script>
+</body>
+</html>
