@@ -1,0 +1,79 @@
+/* Branding + Layout */
+:root{
+  --brand-gold:#f6c977; /* soft gold */
+  --brand-amber:#e9a649; /* amber */
+  --brand-brown:#9b6b3d; /* accent */
+  --ink:#0f172a;
+  --muted:#64748b;
+  --ring:#0ea5e9;
+  --success:#22c55e;
+  --error:#ef4444;
+  --bg:#faf8f5;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--ink);background:linear-gradient(180deg,#fff 0%, #fff 8%, #fdebd2 28%, #fae2c1 48%, #f9d8ae 65%, #f7d09c 80%, #f7cf9c 100%);} 
+.container{max-width:1000px;margin:0 auto;padding:0 20px}
+
+/* Header */
+.site-bar{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;border-bottom:1px solid rgba(0,0,0,.06);background:#fff;position:sticky;top:0;z-index:20}
+.brand{display:flex;gap:10px;align-items:center}
+.logo-star{width:36px;height:36px;border-radius:8px;background:radial-gradient(circle at 30% 30%, #ffd88a, #f1b34f);display:flex;align-items:center;justify-content:center;color:#7a4f16;font-weight:700}
+.brand-text{line-height:1}
+.brand-am{font-weight:700;font-size:12px}
+.brand-en{font-weight:700}
+.secure{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:14px}
+.secure .dot{width:10px;height:10px;border-radius:50%;background:var(--success);box-shadow:0 0 0 2px rgba(34,197,94,.2)}
+
+/* Hero */
+.hero{padding:40px 0 60px;text-align:center}
+.hero h1{font-size:36px;margin:12px 0 8px;color:#7a4f16}
+.hero p{max-width:720px;margin:0 auto;color:#6b7280}
+
+/* Upload Card */
+.card{max-width:760px;margin:24px auto 0;background:rgba(255,255,255,.9);backdrop-filter:saturate(1.1) blur(2px);border-radius:16px;padding:22px;border:1px dashed rgba(139,92,28,.35);box-shadow:0 10px 28px rgba(0,0,0,.08)}
+.dropzone{position:relative;border-radius:12px;padding:26px 18px;background:repeating-linear-gradient(45deg, #fff, #fff 8px, #fff8f0 8px, #fff8f0 16px);border:2px dashed rgba(139,92,28,.35);transition:.2s ease;cursor:pointer}
+.dropzone.dragover{transform:scale(1.01);border-color:var(--ring);background:#fff}
+.drop-head{display:flex;flex-direction:column;align-items:center;gap:8px}
+.choose-btn{background:linear-gradient(180deg,#f3a847,#e48a1a);color:#fff;border:none;padding:10px 16px;border-radius:999px;cursor:pointer;font-weight:600;box-shadow:0 2px 0 rgba(0,0,0,.1)}
+.choose-btn:hover{filter:brightness(1.05)}
+.hint{color:var(--muted);font-size:14px}
+.file-input{display:none}
+.file-name{margin-top:6px;color:#334155;font-size:14px}
+/* Hide Django's default radio list, we provide custom tiles */
+.output-choice{display:none}
+
+/* Format tiles */
+.format-section{margin-top:20px;text-align:left}
+.format-title{font-weight:700;margin-bottom:10px}
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.tile{display:flex;align-items:center;gap:12px;padding:14px;border-radius:12px;background:#fff;border:2px solid #f1f5f9;cursor:pointer;transition:.2s ease}
+.tile:hover{border-color:#f59e0b;box-shadow:0 4px 12px rgba(245,158,11,.15)}
+.tile.selected{border-color:#f59e0b;background:#fff7ed}
+.tile input{display:none}
+.tile-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800}
+.tile.excel .tile-icon{background:#217346}
+.tile.pdf .tile-icon{background:#dc2626}
+.tile .label{font-weight:600}
+.tile .desc{color:var(--muted);font-size:13px}
+
+/* Submit + footer */
+.actions{margin-top:16px;display:flex;align-items:center;gap:12px}
+.primary-btn{background:#0ea5e9;color:#fff;border:0;padding:12px 18px;border-radius:10px;cursor:pointer;font-weight:700}
+.primary-btn:hover{background:#0284c7}
+.supported{margin-top:10px;color:var(--muted);font-size:14px;text-align:center}
+
+/* Loading Overlay */
+.overlay{position:fixed;inset:0;background:rgba(15,23,42,.6);display:none;align-items:center;justify-content:center;z-index:50}
+.overlay.show{display:flex}
+.overlay-card{background:white;border-radius:12px;padding:16px 18px;width:420px;box-shadow:0 10px 30px rgba(0,0,0,.2)}
+.spinner{width:28px;height:28px;border:3px solid #bae6fd;border-top-color:#0ea5e9;border-radius:50%;animation:spin 1s linear infinite}
+.rowc{display:flex;gap:.75rem;align-items:center}
+.muted{color:#64748b}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Responsive */
+@media (max-width:680px){
+  .tiles{grid-template-columns:1fr}
+  .hero h1{font-size:28px}
+}

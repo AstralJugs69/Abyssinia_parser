@@ -10,13 +10,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        tesseract-ocr \
        tesseract-ocr-amh \
-       libtesseract-dev \
-       libleptonica-dev \
-       build-essential \
-       libjpeg-dev \
-       zlib1g-dev \
-       libpng-dev \
-       fonts-dejavu-core \
+       libjpeg62-turbo \
+       zlib1g \
+       libpng16-16 \
        fonts-sil-abyssinica \
     && rm -rf /var/lib/apt/lists/*
 
@@ -26,7 +22,7 @@ WORKDIR /app
 # Install Python dependencies first (better caching)
 COPY requirements.txt requirements.deploy.txt /app/
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt -r requirements.deploy.txt
+    && pip install --no-cache-dir --only-binary=:all: -r requirements.txt -r requirements.deploy.txt
 
 # Copy project
 COPY . /app

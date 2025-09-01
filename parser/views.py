@@ -12,7 +12,8 @@ import os
 from datetime import datetime
 
 from .forms import DocumentUploadForm
-# Removed legacy imports of services/models to avoid heavy optional deps
+from .services import SessionService
+from .models import ProcessedDocument
 
 logger = logging.getLogger(__name__)
 
@@ -278,9 +279,10 @@ def process_document(request):
                 }
             })
         
-        # Update status to processing
+        # Update status to processing and initialize stage
         document.processing_status = 'processing'
         document.error_message = None  # Clear any previous errors
+        document.error_details = {'stage': 'retrieving_file', 'progress': 10}
         document.save()
         
         # Get file from storage
@@ -292,6 +294,7 @@ def process_document(request):
         except Exception as storage_error:
             document.processing_status = 'failed'
             document.error_message = f'Storage error: {str(storage_error)}'
+            document.error_details = {'stage': 'retrieving_file', 'progress': 10}
             document.save()
             
             return JsonResponse({
@@ -303,6 +306,7 @@ def process_document(request):
         if not file_content:
             document.processing_status = 'failed'
             document.error_message = 'File content is empty or could not be retrieved'
+            document.error_details = {'stage': 'retrieving_file', 'progress': 10}
             document.save()
             
             return JsonResponse({
@@ -318,12 +322,15 @@ def process_document(request):
         # Step 1: Extract text with OCR (for images/PDFs) or direct reading (for text files)
         ocr_service = OCRService()
         file_obj = io.BytesIO(file_content)
+        document.error_details = {'stage': 'ocr', 'progress': 30}
+        document.save(update_fields=['error_details'])
         
         try:
             ocr_result = ocr_service.process_file(file_obj, document.file_type)
         except Exception as processing_error:
             document.processing_status = 'failed'
             document.error_message = f'Text extraction error: {str(processing_error)}'
+            document.error_details = {'stage': 'ocr', 'progress': 35}
             document.save()
             
             return JsonResponse({
@@ -335,6 +342,7 @@ def process_document(request):
         if not ocr_result['success']:
             document.processing_status = 'failed'
             document.error_message = ocr_result.get('error', 'Text extraction failed')
+            document.error_details = {'stage': 'ocr', 'progress': 35}
             document.save()
             
             return JsonResponse({
@@ -347,12 +355,15 @@ def process_document(request):
         
         # Step 2: Parse extracted text with LLM
         llm_service = LLMService()
+        document.error_details = {'stage': 'llm_parsing', 'progress': 50}
+        document.save(update_fields=['error_details'])
         
         try:
             llm_result = llm_service.parse_banking_document(extracted_text)
         except Exception as llm_error:
             document.processing_status = 'failed'
             document.error_message = f'LLM parsing error: {str(llm_error)}'
+            document.error_details = {'stage': 'llm_parsing', 'progress': 55}
             document.save()
             
             return JsonResponse({
@@ -364,6 +375,7 @@ def process_document(request):
         if not llm_result['success']:
             document.processing_status = 'failed'
             document.error_message = llm_result.get('error', 'LLM parsing failed')
+            document.error_details = {'stage': 'llm_parsing', 'progress': 55}
             document.save()
             
             return JsonResponse({
@@ -376,12 +388,15 @@ def process_document(request):
         
         # Step 3: Structure the data
         structuring_service = DataStructuringService()
+        document.error_details = {'stage': 'structuring', 'progress': 70}
+        document.save(update_fields=['error_details'])
         
         try:
             structured_result = structuring_service.structure_banking_data(parsed_data)
         except Exception as structuring_error:
             document.processing_status = 'failed'
             document.error_message = f'Data structuring error: {str(structuring_error)}'
+            document.error_details = {'stage': 'structuring', 'progress': 75}
             document.save()
             
             return JsonResponse({
@@ -393,6 +408,7 @@ def process_document(request):
         if not structured_result['success']:
             document.processing_status = 'failed'
             document.error_message = structured_result.get('error', 'Data structuring failed')
+            document.error_details = {'stage': 'structuring', 'progress': 75}
             document.save()
             
             return JsonResponse({
@@ -405,6 +421,8 @@ def process_document(request):
         
         # Step 4: Generate output files
         file_generation_service = FileGenerationService()
+        document.error_details = {'stage': 'file_generation', 'progress': 85}
+        document.save(update_fields=['error_details'])
         
         try:
             generation_result = file_generation_service.generate_all_formats(
@@ -414,6 +432,7 @@ def process_document(request):
         except Exception as generation_error:
             document.processing_status = 'failed'
             document.error_message = f'File generation error: {str(generation_error)}'
+            document.error_details = {'stage': 'file_generation', 'progress': 85}
             document.save()
             
             return JsonResponse({
@@ -425,6 +444,7 @@ def process_document(request):
         if not generation_result['success']:
             document.processing_status = 'failed'
             document.error_message = generation_result.get('error', 'File generation failed')
+            document.error_details = {'stage': 'file_generation', 'progress': 85}
             document.save()
             
             return JsonResponse({
@@ -436,6 +456,8 @@ def process_document(request):
         # Step 5: Upload generated files to Supabase Storage
         storage_service = SupabaseStorageService()
         uploaded_files = {}
+        document.error_details = {'stage': 'uploading_outputs', 'progress': 90}
+        document.save(update_fields=['error_details'])
         
         for file_type, file_info in generation_result['files'].items():
             try:
@@ -494,6 +516,7 @@ def process_document(request):
         
         document.processing_status = 'completed'
         document.error_message = None
+        document.error_details = {'stage': 'completed', 'progress': 100}
         document.save()
         
         return JsonResponse({
@@ -641,6 +664,11 @@ def get_processing_status(request, document_id):
             'created_at': document.created_at.isoformat(),
             'updated_at': document.updated_at.isoformat()
         }
+        # Include stage/progress if available
+        details = document.error_details or {}
+        if details:
+            response_data['stage'] = details.get('stage')
+            response_data['progress'] = details.get('progress')
         
         # Add error information if failed
         if document.processing_status == 'failed' and document.error_message:
