@@ -140,6 +140,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Google Gemini API Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Supabase configuration (for storage-backed file handling)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+# Prefer service role key if provided (server-side ops), fallback to anon/key
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_BUCKET_NAME = os.getenv("SUPABASE_BUCKET_NAME", "document-uploads")
+
 # File Upload Settings
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB

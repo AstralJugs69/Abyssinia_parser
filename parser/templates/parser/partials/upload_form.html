@@ -17,6 +17,27 @@
             </button>
         </div>
         
+        <!-- OCR Engine Selection -->
+        <div class="ocr-engine-section" id="ocr-engine-section" style="display: none;">
+            <h3 style="margin-bottom: 15px; color: #2c3e50;">Choose Processing Method</h3>
+            <div class="ocr-options">
+                {% for value, label in form.ocr_engine.field.choices %}
+                <label class="ocr-option">
+                    <input type="radio" name="ocr_engine" value="{{ value }}" {% if forloop.first %}checked{% endif %}>
+                    <span class="ocr-icon">{% if value == 'tesseract_gemini' %}🔍{% else %}🤖{% endif %}</span>
+                    <span class="ocr-name">{{ label }}</span>
+                    <span class="ocr-desc">
+                        {% if value == 'tesseract_gemini' %}
+                            Traditional OCR with AI cleanup for maximum accuracy
+                        {% else %}
+                            Advanced AI vision for direct document understanding
+                        {% endif %}
+                    </span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
         <!-- Output Format Selection -->
         <div class="output-format-section" id="output-format-section" style="display: none;">
             <h3 style="margin-bottom: 15px; color: #2c3e50;">Choose Output Formats</h3>

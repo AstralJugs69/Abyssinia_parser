@@ -18,6 +18,17 @@ class DocumentUploadForm(forms.Form):
         help_text='Supported formats: JPG, PNG, PDF (Max size: 10MB)'
     )
 
+    OCR_ENGINE_CHOICES = (
+        ('tesseract_gemini', 'Tesseract OCR + Gemini 2.0 Cleanup'),
+        ('gemini_vision', 'Gemini 2.0 Vision (Direct Processing)'),
+    )
+    ocr_engine = forms.ChoiceField(
+        choices=OCR_ENGINE_CHOICES,
+        initial='tesseract_gemini',
+        widget=forms.RadioSelect(attrs={'class': 'ocr-choice'}),
+        help_text='Choose your OCR processing method.'
+    )
+
     OUTPUT_CHOICES = (
         ('excel', 'Excel (.xlsx)'),
         ('pdf', 'PDF'),

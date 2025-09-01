@@ -36,6 +36,11 @@
     overlay.classList.add('show');
     if(stageTitle) stageTitle.innerHTML = '<strong>' + (title || 'Working…') + '</strong>';
     if(stageDesc) stageDesc.textContent = desc || '';
+    // Show OCR engine section when file is selected
+    const ocrSection = document.getElementById('ocr-engine-section');
+    if(ocrSection && fileInput && fileInput.files && fileInput.files.length) {
+      ocrSection.style.display = 'block';
+    }
   }
   function hideOverlay(){ overlay && overlay.classList.remove('show'); }
   window.addEventListener('beforeunload', hideOverlay);
@@ -110,6 +115,31 @@
   // Initialize tile based on current radio
   const checked = document.querySelector('input[name="output_format"]:checked');
   if(checked){ setOutputFormat(checked.value); }
+
+  // OCR Engine Selection Handling
+  const ocrOptions = document.querySelectorAll('.ocr-option');
+  
+  function setOcrEngine(val){
+    const radio = document.querySelector('input[name="ocr_engine"][value="' + val + '"]');
+    if(radio){ radio.checked = true; }
+    ocrOptions.forEach(option => {
+      const selected = option.querySelector('input[type="radio"]').value === val;
+      option.classList.toggle('selected', selected);
+    });
+  }
+
+  ocrOptions.forEach(option => {
+    option.addEventListener('click', function(){
+      const radioInput = this.querySelector('input[type="radio"]');
+      if(radioInput){
+        setOcrEngine(radioInput.value);
+      }
+    });
+  });
+
+  // Initialize OCR engine based on current radio
+  const checkedOcr = document.querySelector('input[name="ocr_engine"]:checked');
+  if(checkedOcr){ setOcrEngine(checkedOcr.value); }
 
   // Stage mapping from backend to friendly messages
   const stageMessages = {

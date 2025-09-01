@@ -66,6 +66,77 @@
     background-color: #2980b9;
 }
 
+/* OCR Engine Selection Styles */
+.ocr-engine-section {
+    margin-top: 20px;
+    padding: 20px;
+    background-color: #f8f9fa;
+    border-radius: 8px;
+    border: 1px solid #e9ecef;
+}
+
+.ocr-options {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.ocr-option {
+    display: flex;
+    align-items: flex-start;
+    padding: 15px;
+    border: 2px solid #e9ecef;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    background-color: white;
+}
+
+.ocr-option:hover {
+    border-color: #3498db;
+    background-color: #f8f9fa;
+}
+
+.ocr-option input[type="radio"] {
+    margin-right: 12px;
+    margin-top: 2px;
+}
+
+.ocr-option input[type="radio"]:checked + .ocr-icon + .ocr-name {
+    color: #3498db;
+    font-weight: 600;
+}
+
+.ocr-option input[type="radio"]:checked ~ * {
+    color: #2c3e50;
+}
+
+.ocr-option:has(input[type="radio"]:checked) {
+    border-color: #3498db;
+    background-color: #e3f2fd;
+}
+
+.ocr-icon {
+    font-size: 1.5rem;
+    margin-right: 12px;
+    margin-top: -2px;
+}
+
+.ocr-name {
+    font-weight: 500;
+    font-size: 1.1rem;
+    color: #2c3e50;
+    margin-bottom: 5px;
+    display: block;
+}
+
+.ocr-desc {
+    font-size: 0.9rem;
+    color: #7f8c8d;
+    line-height: 1.4;
+    display: block;
+}
+
 /* Progress Styles */
 .progress-container {
     display: none;
@@ -488,12 +559,12 @@ lts Section Styles */
     }
     
     .download-btn {
-        font-size: 0.7rem;
-        padding: 8px 6px;
+        font-size: 0.6rem;
+        padding: 6px 4px;
     }
 }
-/
-* Error Modal Styles */
+
+/* Error Modal Styles */
 .error-modal {
     position: fixed;
     top: 0;

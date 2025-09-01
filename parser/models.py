@@ -50,6 +50,8 @@ class ProcessedDocument(models.Model):
         ],
         default='pending'
     )
+    # Storage path of the originally uploaded file (e.g., Supabase key)
+    source_file_path = models.CharField(max_length=500, blank=True, null=True)
     error_message = models.TextField(blank=True, null=True)
     error_details = models.JSONField(default=dict, help_text="Detailed error information for debugging")
     retry_count = models.PositiveIntegerField(default=0, help_text="Number of retry attempts")

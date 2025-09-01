@@ -13,6 +13,7 @@ import re
 import time
 from typing import Dict, Any, Optional, List
 import google.generativeai as genai
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 # File generation imports
 from openpyxl import Workbook
@@ -372,29 +373,93 @@ class OCRService:
 
 
 class LLMService:
-    """Service for parsing extracted text using Google Gemini API"""
+    """Service for parsing extracted text using Google Gemini API with fallback parsing"""
     
     def __init__(self):
         # Initialize Gemini client
         self.gemini_client = None
+        self.vision_client = None
         if hasattr(settings, 'GEMINI_API_KEY') and settings.GEMINI_API_KEY:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.gemini_client = genai.GenerativeModel('gemini-1.5-flash')
+            try:
+                genai.configure(api_key=settings.GEMINI_API_KEY)
+                # Use the configured model from settings, default to gemini-2.0-flash-exp
+                model_name = getattr(settings, 'GEMINI_MODEL', 'gemini-2.0-flash-exp')
+                self.gemini_client = genai.GenerativeModel(model_name)
+                # Vision model for direct image processing - use flash model to avoid quota issues
+                vision_model = getattr(settings, 'GEMINI_VISION_MODEL', 'gemini-2.0-flash-exp')
+                self.vision_client = genai.GenerativeModel(vision_model)
+                logger.info(f"Gemini API initialized successfully with model: {model_name}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Gemini API: {str(e)}")
+                self.gemini_client = None
+                self.vision_client = None
     
-    def parse_banking_document(self, text: str, document_type: str = "banking_document") -> Dict[str, Any]:
-        """Parse banking document text using Gemini to extract structured data"""
+    def parse_banking_document(self, text: str, document_type: str = "document", ocr_engine: str = "tesseract") -> Dict[str, Any]:
+        """Parse document text using Gemini API or fallback pattern matching"""
         if not text or not text.strip():
             return {'success': False, 'error': 'No text provided for parsing', 'data': {}}
         
-        if not self.gemini_client:
-            return {'success': False, 'error': 'Gemini API not configured', 'data': {}}
+        # Try Gemini API first if available
+        if self.gemini_client:
+            logger.info(f"Using Gemini API for document parsing (OCR engine: {ocr_engine})")
+            gemini_result = self._try_gemini_parsing(text, document_type, ocr_engine)
+            if gemini_result['success']:
+                return gemini_result
+            else:
+                logger.warning(f"Gemini API failed: {gemini_result.get('error')}. Falling back to pattern matching.")
         
+        # Fallback to pattern matching
+        logger.info("Using pattern matching fallback for document parsing")
+        return self._fallback_pattern_parsing(text)
+    
+    def process_document_with_vision(self, image_data: bytes, file_type: str) -> Dict[str, Any]:
+        """Process document directly with Gemini Vision API"""
+        if not self.vision_client:
+            return {'success': False, 'error': 'Gemini Vision API not available', 'data': {}}
+        
+        try:
+            # Convert image data to PIL Image
+            image = Image.open(io.BytesIO(image_data))
+            
+            # Build vision prompt
+            prompt = self._build_vision_prompt()
+            
+            # Process with Gemini Vision
+            response = self.vision_client.generate_content([prompt, image])
+            
+            if not response.text:
+                return {'success': False, 'error': 'No response from Gemini Vision', 'data': {}}
+            
+            # Parse the response
+            parsed_data = self._parse_llm_response(response.text)
+            if parsed_data:
+                return {
+                    'success': True,
+                    'data': parsed_data,
+                    'message': 'Document processed successfully with Gemini Vision',
+                    'raw_text': response.text[:500] + '...' if len(response.text) > 500 else response.text
+                }
+            else:
+                return {'success': False, 'error': 'Failed to parse Gemini Vision response', 'data': {}}
+                
+        except Exception as e:
+            logger.error(f"Gemini Vision processing failed: {str(e)}")
+            return {'success': False, 'error': f'Vision processing failed: {str(e)}', 'data': {}}
+    
+    def _try_gemini_parsing(self, text: str, document_type: str, ocr_engine: str = "tesseract") -> Dict[str, Any]:
+        """Try parsing with Gemini API"""
         # Simple retry logic - try twice
         for attempt in range(2):
             try:
-                prompt = self._build_parsing_prompt(text, document_type)
+                prompt = self._build_parsing_prompt(text, document_type, ocr_engine)
                 
-                response = self.gemini_client.generate_content(prompt)
+                # Run the API call with a timeout to prevent hangs
+                def _call_model():
+                    return self.gemini_client.generate_content(prompt)
+                
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_call_model)
+                    response = future.result(timeout=90)  # Increased timeout for better models
                 
                 if not response.text:
                     continue
@@ -404,63 +469,267 @@ class LLMService:
                     return {
                         'success': True,
                         'data': parsed_data,
-                        'message': 'Document parsed successfully'
+                        'message': f'Document parsed successfully with Gemini API (OCR: {ocr_engine})'
                     }
                     
+            except FuturesTimeoutError:
+                logger.error(f"Gemini API timeout (attempt {attempt + 1})")
+                if attempt == 1:
+                    return {'success': False, 'error': 'AI service timeout', 'data': {}}
             except Exception as e:
                 logger.error(f"Gemini API error (attempt {attempt + 1}): {str(e)}")
                 if attempt == 1:  # Last attempt
                     return {'success': False, 'error': f'AI service error: {str(e)}', 'data': {}}
         
-        return {'success': False, 'error': 'Failed to parse document', 'data': {}}
+        return {'success': False, 'error': 'Failed to parse document with Gemini', 'data': {}}
     
-
+    def _fallback_pattern_parsing(self, text: str) -> Dict[str, Any]:
+        """Fallback parsing using pattern matching for common document fields"""
+        try:
+            # Clean the text
+            text_lines = [line.strip() for line in text.split('\n') if line.strip()]
+            full_text = ' '.join(text_lines)
+            
+            # Extract basic information using patterns
+            parsed_data = {
+                'document_type': self._detect_document_type(full_text),
+                'confidence_score': 0.7,  # Lower confidence for pattern matching
+                'personal_information': self._extract_personal_info(full_text, text_lines),
+                'financial_data': self._extract_financial_data(full_text, text_lines),
+                'dates': self._extract_dates(full_text),
+                'bank_information': self._extract_bank_info(full_text)
+            }
+            
+            return {
+                'success': True,
+                'data': parsed_data,
+                'message': 'Document parsed successfully with pattern matching'
+            }
+            
+        except Exception as e:
+            logger.error(f"Fallback parsing failed: {str(e)}")
+            return {
+                'success': False,
+                'error': f'Pattern parsing failed: {str(e)}',
+                'data': {}
+            }
     
-    def _build_parsing_prompt(self, text: str, document_type: str) -> str:
-        """Build simplified prompt for banking document parsing"""
-        return f"""Extract banking data from this {document_type} and return JSON:
-
-{{
-    "document_type": "type",
-    "confidence_score": 0.8,
-    "personal_information": {{
-        "full_name": "name or null",
-        "account_number": "account or null",
-        "address": "address or null"
-    }},
-    "financial_data": {{
-        "account_balance": "balance or null",
-        "transactions": [
-            {{"date": "date", "description": "desc", "amount": "amount", "type": "debit/credit"}}
+    def _detect_document_type(self, text: str) -> str:
+        """Detect document type from text content"""
+        text_lower = text.lower()
+        
+        if any(word in text_lower for word in ['statement', 'bank statement', 'account statement']):
+            return 'Bank Statement'
+        elif any(word in text_lower for word in ['balance', 'account balance']):
+            return 'Balance Inquiry'
+        elif any(word in text_lower for word in ['loan', 'credit', 'mortgage']):
+            return 'Loan Document'
+        elif any(word in text_lower for word in ['transaction', 'payment', 'transfer']):
+            return 'Transaction Record'
+        else:
+            return 'Document'
+    
+    def _extract_personal_info(self, full_text: str, text_lines: List[str]) -> Dict[str, Any]:
+        """Extract personal information using patterns"""
+        personal_info = {}
+        
+        # Look for account numbers (8-16 digits, sometimes with spaces or dashes)
+        account_patterns = [
+            r'account[:\s]*([0-9\s\-]{8,20})',
+            r'a/c[:\s]*([0-9\s\-]{8,20})',
+            r'acc[:\s]*([0-9\s\-]{8,20})'
         ]
-    }},
-    "dates": {{
-        "statement_date": "date or null"
-    }},
-    "bank_information": {{
-        "bank_name": "bank or null"
-    }}
-}}
+        
+        for pattern in account_patterns:
+            match = re.search(pattern, full_text, re.IGNORECASE)
+            if match:
+                account_num = re.sub(r'[^\d]', '', match.group(1))
+                if len(account_num) >= 8:
+                    personal_info['account_number'] = account_num
+                    break
+        
+        # Look for names (capitalized words, usually at the beginning)
+        name_patterns = [
+            r'name[:\s]*([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+            r'customer[:\s]*([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)*)'
+        ]
+        
+        for pattern in name_patterns:
+            match = re.search(pattern, full_text, re.IGNORECASE)
+            if match:
+                personal_info['full_name'] = match.group(1).strip()
+                break
+        
+        # If no pattern match, try to find capitalized names in first few lines
+        if 'full_name' not in personal_info:
+            for line in text_lines[:5]:
+                # Look for lines with 2+ capitalized words
+                words = line.split()
+                cap_words = [w for w in words if w and w[0].isupper() and len(w) > 1]
+                if len(cap_words) >= 2 and len(' '.join(cap_words)) < 50:
+                    personal_info['full_name'] = ' '.join(cap_words)
+                    break
+        
+        return personal_info
+    
+    def _extract_financial_data(self, full_text: str, text_lines: List[str]) -> Dict[str, Any]:
+        """Extract financial information"""
+        financial_data = {}
+        transactions = []
+        
+        # Look for balance amounts
+        balance_patterns = [
+            r'balance[:\s]*([A-Z]{0,3})\s*([0-9,]+\.?\d*)',
+            r'available[:\s]*([A-Z]{0,3})\s*([0-9,]+\.?\d*)',
+            r'current[:\s]*([A-Z]{0,3})\s*([0-9,]+\.?\d*)'
+        ]
+        
+        for pattern in balance_patterns:
+            match = re.search(pattern, full_text, re.IGNORECASE)
+            if match:
+                currency = match.group(1) if match.group(1) else 'ETB'
+                amount = match.group(2).replace(',', '')
+                financial_data['account_balance'] = f"{currency} {amount}"
+                break
+        
+        # Look for transactions in table-like format
+        for line in text_lines:
+            # Pattern for transaction-like lines (date, description, amount)
+            trans_match = re.search(r'(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+([+-]?\d+[,.]?\d*)', line)
+            if trans_match:
+                date_str = trans_match.group(1)
+                description = trans_match.group(2).strip()
+                amount = trans_match.group(3).replace(',', '')
+                
+                transaction_type = 'debit' if amount.startswith('-') or float(amount.replace('-', '')) < 0 else 'credit'
+                
+                transactions.append({
+                    'date': date_str,
+                    'description': description,
+                    'amount': amount,
+                    'type': transaction_type
+                })
+        
+        if transactions:
+            financial_data['transactions'] = transactions
+        
+        return financial_data
+    
+    def _extract_dates(self, text: str) -> Dict[str, Any]:
+        """Extract important dates"""
+        dates = {}
+        
+        # Look for statement dates
+        date_patterns = [
+            r'statement\s+date[:\s]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
+            r'date[:\s]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
+            r'(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})'
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                dates['statement_date'] = match.group(1)
+                break
+        
+        return dates
+    
+    def _extract_bank_info(self, text: str) -> Dict[str, Any]:
+        """Extract bank information"""
+        bank_info = {}
+        
+        # Common Ethiopian banks
+        ethiopian_banks = [
+            'Commercial Bank of Ethiopia', 'CBE', 'Dashen Bank', 'Awash Bank',
+            'Bank of Abyssinia', 'Wegagen Bank', 'United Bank', 'Nib Bank',
+            'Cooperative Bank of Oromia', 'Lion Bank', 'Oromia Bank',
+            'Abay Bank', 'Addis International Bank', 'Debub Global Bank'
+        ]
+        
+        text_upper = text.upper()
+        for bank in ethiopian_banks:
+            if bank.upper() in text_upper:
+                bank_info['bank_name'] = bank
+                break
+        
+        # If no specific bank found, look for "bank" keyword
+        if 'bank_name' not in bank_info:
+            bank_match = re.search(r'([A-Z][a-z]+\s+Bank)', text)
+            if bank_match:
+                bank_info['bank_name'] = bank_match.group(1)
+        
+        return bank_info
+    
 
-Return only valid JSON. Use null for missing data.
+    
+    def _build_parsing_prompt(self, text: str, document_type: str, ocr_engine: str = "tesseract") -> str:
+        """Build flexible prompt for document parsing"""
+        ocr_context = ""
+        if ocr_engine == "tesseract":
+            ocr_context = "This text was extracted using OCR and may contain some errors."
+        
+        return f"""Parse this document and extract all the information exactly as it appears in the original layout. {ocr_context}
 
-Text: {text}"""
+CRITICAL: Preserve the exact structure, positioning, and formatting of the original document. If text contains Amharic/Ethiopian characters, preserve them exactly as they appear.
+
+Extract information in JSON format that mirrors the original document structure:
+- If it's a table, preserve the exact table structure with rows and columns
+- If it's a list, maintain the list format  
+- If it's paragraph text, keep the paragraph structure
+- Preserve all languages (English, Amharic, numbers) exactly as written
+- Maintain spatial relationships between elements
+
+Return valid JSON that represents the document's actual layout and content.
+
+Document Text:
+{text}"""
+    
+    def _build_vision_prompt(self) -> str:
+        """Build structure-preserving prompt for Gemini Vision API"""
+        return """Analyze this document image and extract all information exactly as it appears in the original layout.
+
+CRITICAL: Preserve the exact structure, positioning, and formatting of the original document. If text contains Amharic/Ethiopian characters, preserve them exactly as they appear.
+
+Extract information in JSON format that mirrors the original document structure:
+- If it's a table, preserve the exact table structure with rows and columns in the same order
+- If it's a list, maintain the list format and sequence
+- If it's paragraph text, keep the paragraph structure and line breaks
+- Preserve all languages (English, Amharic, numbers) exactly as written
+- Maintain spatial relationships and positioning between elements
+- Keep the original reading order (top to bottom, left to right)
+
+Return valid JSON that represents the document's actual visual layout and content."""
     
     def _parse_llm_response(self, response_text: str) -> Optional[Dict[str, Any]]:
-        """Parse LLM response and extract JSON data"""
+        """Parse LLM response and extract JSON data - flexible parsing"""
         try:
             cleaned_text = response_text.strip()
+            
+            # Try to find JSON in the response
             json_start = cleaned_text.find('{')
             json_end = cleaned_text.rfind('}') + 1
             
             if json_start >= 0 and json_end > json_start:
                 json_text = cleaned_text[json_start:json_end]
-                return json.loads(json_text)
+                parsed_data = json.loads(json_text)
+                
+                # If parsed successfully, return as-is (no template enforcement)
+                return parsed_data
             
-            return None
+            # If no JSON found, create a simple structure from the text
+            return {
+                "document_type": "Document",
+                "extracted_text": cleaned_text[:1000],  # First 1000 chars
+                "parsing_method": "text_fallback"
+            }
                 
         except json.JSONDecodeError:
-            return None
+            # Fallback: return the text as extracted content
+            return {
+                "document_type": "Document", 
+                "extracted_text": response_text[:1000],
+                "parsing_method": "text_fallback"
+            }
         except Exception:
             return None
     
@@ -480,51 +749,75 @@ Text: {text}"""
 
 
 class DataStructuringService:
-    """Service for organizing and formatting extracted banking data"""
+    """Service for organizing and formatting extracted document data"""
     
-    def structure_banking_data(self, parsed_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Structure parsed banking data for display and export"""
+    def structure_document_data(self, parsed_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Structure parsed document data exactly as extracted - no metadata added"""
         try:
-            # Simplified data organization
-            structured_data = {
-                'metadata': {
-                    'document_type': parsed_data.get('document_type', 'Unknown'),
-                    'processing_timestamp': datetime.now().isoformat()
-                },
-                'personal_info': self._format_data(parsed_data.get('personal_information', {})),
-                'financial_summary': self._format_data(parsed_data.get('financial_data', {})),
-                'transactions': self._format_transactions(parsed_data.get('financial_data', {}).get('transactions', [])),
-                'loan_details': self._format_data(parsed_data.get('loan_information', {})),
-                'bank_details': self._format_data(parsed_data.get('bank_information', {})),
-                'important_dates': self._format_data(parsed_data.get('dates', {}))
-            }
+            # Return the parsed data as-is, without adding metadata or processing timestamps
+            structured_data = {}
+            
+            # Dynamically organize whatever data was extracted
+            for key, value in parsed_data.items():
+                if key in ['document_type', 'parsing_method']:
+                    continue  # Skip internal processing fields
+                
+                if isinstance(value, dict) and value:
+                    structured_data[key] = self._format_data(value)
+                elif isinstance(value, list) and value:
+                    # Handle any list data - could be transactions, items, entries, etc.
+                    if self._looks_like_tabular_data(value):
+                        structured_data[key] = self._format_tabular_data(value)
+                    else:
+                        structured_data[key] = value
+                elif value:  # Any other non-empty value
+                    structured_data[key] = [{'field': key.replace('_', ' ').title(), 'value': str(value)}]
             
             return ErrorHandler.success('Data structured successfully', structured_data)
             
-        except Exception:
-            return ErrorHandler.error('Data structuring failed')
+        except Exception as e:
+            return ErrorHandler.error(f'Data structuring failed: {str(e)}')
     
     def _format_data(self, data: Dict[str, Any]) -> List[Dict[str, str]]:
         """Format data section as key-value pairs"""
+        def _normalize_value(value: Any) -> str:
+            if value is None:
+                return 'N/A'
+            if isinstance(value, str):
+                return value.strip() or 'N/A'
+            return str(value)
         return [
-            {'field': key.replace('_', ' ').title(), 'value': str(value)}
-            for key, value in data.items() 
-            if value and str(value).strip()
+            {'field': key.replace('_', ' ').title(), 'value': _normalize_value(value)}
+            for key, value in data.items()
         ]
     
-    def _format_transactions(self, transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Format transaction data"""
+    def _looks_like_tabular_data(self, data: List[Any]) -> bool:
+        """Check if list data looks like tabular data (dictionaries with similar keys)"""
+        if not data or len(data) < 2:
+            return False
+        
+        # Check if first few items are dictionaries with similar structure
+        sample_items = data[:3]
+        if not all(isinstance(item, dict) for item in sample_items):
+            return False
+        
+        # Check for common keys that suggest tabular data
+        first_keys = set(sample_items[0].keys())
+        return len(first_keys) > 1 and all(
+            len(set(item.keys()) & first_keys) / len(first_keys) > 0.5 
+            for item in sample_items[1:]
+        )
+    
+    def _format_tabular_data(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Format tabular data (transactions, entries, records, etc.)"""
         return [
             {
                 'id': i + 1,
-                'date': t.get('date', ''),
-                'description': t.get('description', ''),
-                'amount': t.get('amount', ''),
-                'type': t.get('type', '')
+                **{k: str(v) if v is not None else '' for k, v in item.items()}
             }
-            for i, t in enumerate(transactions) 
-            if isinstance(t, dict)
+            for i, item in enumerate(data[:100])  # Limit to 100 entries
         ]
+
 
 
 class FileGenerationService:
@@ -537,7 +830,7 @@ class FileGenerationService:
     def generate_all_formats(self, structured_data: Dict[str, Any], session_key: str) -> Dict[str, Any]:
         """Generate all three output formats with simplified error handling"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_filename = f"banking_document_{session_key}_{timestamp}"
+        base_filename = f"document_{session_key}_{timestamp}"
         
         results = {'success': True, 'files': {}, 'errors': []}
         
@@ -561,49 +854,44 @@ class FileGenerationService:
         return results
     
     def generate_excel_file(self, data: Dict[str, Any], base_filename: str) -> Dict[str, Any]:
-        """Generate Excel file with basic formatting"""
+        """Generate Excel file with raw data structure"""
         try:
             wb = Workbook()
             ws = wb.active
-            ws.title = "Banking Data"
+            ws.title = "Data"
             
             row = 1
-            ws[f'A{row}'] = "Banking Document Report"
-            ws[f'A{row}'].font = Font(bold=True, size=14)
-            row += 2
             
-            # Add sections
+            # Add sections without titles - just the data
             for section_name, section_data in data.items():
-                if not section_data:
+                if not section_data or section_name == 'metadata':
                     continue
-                    
-                ws[f'A{row}'] = section_name.replace('_', ' ').title()
-                ws[f'A{row}'].font = Font(bold=True)
-                row += 1
                 
                 if isinstance(section_data, list):
-                    # Handle transactions
-                    if section_name == 'transactions':
-                        headers = ['Date', 'Description', 'Amount', 'Type']
-                        for col, header in enumerate(headers, 1):
-                            ws.cell(row=row, column=col, value=header).font = Font(bold=True)
-                        row += 1
+                    # Check if this is tabular data (list of dicts with similar structure)
+                    if section_data and isinstance(section_data[0], dict) and 'id' in section_data[0]:
+                        # Handle tabular data dynamically - no headers, just raw data
+                        first_item = section_data[0]
+                        headers = [key for key in first_item.keys() if key != 'id']
                         
-                        for transaction in section_data:
-                            if isinstance(transaction, dict):
-                                ws.cell(row=row, column=1, value=transaction.get('date', ''))
-                                ws.cell(row=row, column=2, value=transaction.get('description', ''))
-                                ws.cell(row=row, column=3, value=str(transaction.get('amount', '')))
-                                ws.cell(row=row, column=4, value=transaction.get('type', ''))
+                        for item in section_data:
+                            if isinstance(item, dict):
+                                for col, header in enumerate(headers, 1):
+                                    value = item.get(header, '')
+                                    ws.cell(row=row, column=col, value=str(value) if value is not None else '')
+                                row += 1
+                    else:
+                        # Handle key-value pairs lists - just values without field names
+                        for item in section_data:
+                            if isinstance(item, dict):
+                                value = item.get('value', '')
+                                ws.cell(row=row, column=1, value=str(value) if value else '')
                                 row += 1
                 elif isinstance(section_data, dict):
-                    # Handle key-value data
+                    # Handle key-value data - just values
                     for key, value in section_data.items():
-                        if value:
-                            ws[f'A{row}'] = key.replace('_', ' ').title()
-                            ws[f'B{row}'] = str(value)
-                            row += 1
-                row += 1
+                        ws.cell(row=row, column=1, value=str(value) if value is not None else '')
+                        row += 1
             
             output_path = os.path.join(self.temp_dir, f"{base_filename}.xlsx")
             wb.save(output_path)
@@ -617,7 +905,7 @@ class FileGenerationService:
             return ErrorHandler.error(f'Excel generation failed: {str(e)}')
     
     def generate_pdf_file(self, data: Dict[str, Any], base_filename: str) -> Dict[str, Any]:
-        """Generate PDF file with basic template"""
+        """Generate PDF file with raw data only"""
         try:
             output_path = os.path.join(self.temp_dir, f"{base_filename}.pdf")
             doc = SimpleDocTemplate(output_path, pagesize=letter)
@@ -625,42 +913,41 @@ class FileGenerationService:
             styles = getSampleStyleSheet()
             story = []
             
-            # Title
-            story.append(Paragraph("Banking Document Report", styles['Title']))
-            story.append(Spacer(1, 20))
-            
-            # Add sections
+            # Add sections without titles - just the raw data
             for section_name, section_data in data.items():
-                if not section_data:
+                if not section_data or section_name == 'metadata':
                     continue
-                    
-                story.append(Paragraph(section_name.replace('_', ' ').title(), styles['Heading2']))
                 
-                if isinstance(section_data, list) and section_name == 'transactions':
-                    # Simple transaction table
-                    table_data = [['Date', 'Description', 'Amount', 'Type']]
-                    for transaction in section_data:
-                        if isinstance(transaction, dict):
-                            table_data.append([
-                                transaction.get('date', ''),
-                                transaction.get('description', ''),
-                                str(transaction.get('amount', '')),
-                                transaction.get('type', '')
-                            ])
-                    
-                    table = Table(table_data)
-                    table.setStyle(TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-                    ]))
-                    story.append(table)
+                if isinstance(section_data, list):
+                    # Check if this is tabular data
+                    if section_data and isinstance(section_data[0], dict) and 'id' in section_data[0]:
+                        # Create table with just data, no headers or styling
+                        first_item = section_data[0]
+                        headers = [key for key in first_item.keys() if key != 'id']
+                        table_data = []
+                        
+                        for item in section_data:
+                            if isinstance(item, dict):
+                                row_data = [str(item.get(header, '')) for header in headers]
+                                table_data.append(row_data)
+                        
+                        table = Table(table_data)
+                        table.setStyle(TableStyle([
+                            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                        ]))
+                        story.append(table)
+                    else:
+                        # Just the raw values without labels
+                        for item in section_data:
+                            if isinstance(item, dict):
+                                value = item.get('value', '')
+                                if value:
+                                    story.append(Paragraph(str(value), styles['Normal']))
                 elif isinstance(section_data, dict):
-                    # Simple key-value pairs
+                    # Just the raw values
                     for key, value in section_data.items():
                         if value:
-                            story.append(Paragraph(f"<b>{key.replace('_', ' ').title()}:</b> {value}", styles['Normal']))
-                
-                story.append(Spacer(1, 12))
+                            story.append(Paragraph(str(value), styles['Normal']))
             
             doc.build(story)
             
@@ -673,41 +960,43 @@ class FileGenerationService:
             return ErrorHandler.error(f'PDF generation failed: {str(e)}')
     
     def generate_doc_file(self, data: Dict[str, Any], base_filename: str) -> Dict[str, Any]:
-        """Generate DOC file with essential functionality"""
+        """Generate DOC file with raw data only"""
         try:
             output_path = os.path.join(self.temp_dir, f"{base_filename}.docx")
             doc = Document()
             
-            # Title
-            doc.add_heading('Banking Document Report', 0)
-            
-            # Add sections
+            # Add sections without titles - just raw data
             for section_name, section_data in data.items():
-                if not section_data:
+                if not section_data or section_name == 'metadata':
                     continue
-                    
-                doc.add_heading(section_name.replace('_', ' ').title(), level=1)
                 
-                if isinstance(section_data, list) and section_name == 'transactions':
-                    # Simple transaction table
-                    table = doc.add_table(rows=1, cols=4)
-                    header_cells = table.rows[0].cells
-                    headers = ['Date', 'Description', 'Amount', 'Type']
-                    for i, header in enumerate(headers):
-                        header_cells[i].text = header
-                    
-                    for transaction in section_data:
-                        if isinstance(transaction, dict):
-                            row_cells = table.add_row().cells
-                            row_cells[0].text = transaction.get('date', '')
-                            row_cells[1].text = transaction.get('description', '')
-                            row_cells[2].text = str(transaction.get('amount', ''))
-                            row_cells[3].text = transaction.get('type', '')
+                if isinstance(section_data, list):
+                    # Check if this is tabular data
+                    if section_data and isinstance(section_data[0], dict) and 'id' in section_data[0]:
+                        # Create table with just data, no headers
+                        first_item = section_data[0]
+                        headers = [key for key in first_item.keys() if key != 'id']
+                        
+                        table = doc.add_table(rows=0, cols=len(headers))
+                        
+                        for item in section_data:
+                            if isinstance(item, dict):
+                                row_cells = table.add_row().cells
+                                for i, header in enumerate(headers):
+                                    value = item.get(header, '')
+                                    row_cells[i].text = str(value) if value is not None else ''
+                    else:
+                        # Just raw values without field names
+                        for item in section_data:
+                            if isinstance(item, dict):
+                                value = item.get('value', '')
+                                if value:
+                                    doc.add_paragraph(str(value))
                 elif isinstance(section_data, dict):
-                    # Simple key-value pairs
+                    # Just raw values
                     for key, value in section_data.items():
                         if value:
-                            doc.add_paragraph(f"{key.replace('_', ' ').title()}: {value}")
+                            doc.add_paragraph(str(value))
             
             doc.save(output_path)
             

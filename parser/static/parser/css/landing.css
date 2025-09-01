@@ -18,10 +18,7 @@ body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-s
 /* Header */
 .site-bar{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;border-bottom:1px solid rgba(0,0,0,.06);background:#fff;position:sticky;top:0;z-index:20}
 .brand{display:flex;gap:10px;align-items:center}
-.logo-star{width:36px;height:36px;border-radius:8px;background:radial-gradient(circle at 30% 30%, #ffd88a, #f1b34f);display:flex;align-items:center;justify-content:center;color:#7a4f16;font-weight:700}
-.brand-text{line-height:1}
-.brand-am{font-weight:700;font-size:12px}
-.brand-en{font-weight:700}
+.brand-logo{height:36px;width:auto}
 .secure{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:14px}
 .secure .dot{width:10px;height:10px;border-radius:50%;background:var(--success);box-shadow:0 0 0 2px rgba(34,197,94,.2)}
 
@@ -42,6 +39,18 @@ body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-s
 .file-name{margin-top:6px;color:#334155;font-size:14px}
 /* Hide Django's default radio list, we provide custom tiles */
 .output-choice{display:none}
+
+/* OCR Engine Options */
+.ocr-options{display:grid;gap:12px;margin-bottom:20px}
+.ocr-option{display:flex;align-items:center;padding:16px;border-radius:12px;background:#fff;border:2px solid #f1f5f9;cursor:pointer;transition:.2s ease}
+.ocr-option:hover{border-color:#f59e0b;box-shadow:0 4px 12px rgba(245,158,11,.15)}
+.ocr-option.selected{border-color:#f59e0b;background:#fff7ed}
+.ocr-option input[type="radio"]{margin-right:12px;transform:scale(1.1)}
+.ocr-info{display:flex;align-items:center;gap:12px;width:100%}
+.ocr-icon{font-size:1.5rem}
+.ocr-details{flex:1}
+.ocr-name{font-weight:600;color:#1f2937;margin-bottom:2px}
+.ocr-desc{color:var(--muted);font-size:13px}
 
 /* Format tiles */
 .format-section{margin-top:20px;text-align:left}

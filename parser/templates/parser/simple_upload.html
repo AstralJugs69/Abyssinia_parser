@@ -31,13 +31,8 @@
   <!-- Header -->
   <header class="site-bar">
     <div class="brand">
-      <div class="logo-star">★</div>
-      <div class="brand-text">
-        <div class="brand-am">ባንክ ኦፍ አቢሲኒያ</div>
-        <div class="brand-en">Bank of Abyssinia</div>
-      </div>
+      <img src="{% static 'parser/images/bank-logo.svg' %}" alt="Bank of Abyssinia Logo" class="brand-logo">
     </div>
-    <div class="secure"><span class="dot"></span><span>Secure Processing</span></div>
   </header>
 
   <!-- Hero -->
@@ -70,6 +65,38 @@
         {% if form.file.errors %}
           <ul class="errorlist">{% for e in form.file.errors %}<li>{{ e }}</li>{% endfor %}</ul>
         {% endif %}
+
+        <!-- OCR Engine Selection -->
+        <div class="format-section">
+          <div class="format-title">Choose OCR Engine</div>
+          <!-- Keep Django radios (hidden) -->
+          {{ form.ocr_engine }}
+          <div class="ocr-options" role="listbox" aria-label="OCR engine">
+            <div class="ocr-option" role="option">
+              <input type="radio" name="ocr_engine" value="tesseract_gemini" id="ocr_tesseract" {% if form.ocr_engine.value == 'tesseract_gemini' or not form.ocr_engine.value %}checked{% endif %}>
+              <div class="ocr-info">
+                <div class="ocr-icon">🔍</div>
+                <div class="ocr-details">
+                  <div class="ocr-name">Tesseract + AI Cleanup</div>
+                  <div class="ocr-desc">Traditional OCR with AI enhancement for accuracy</div>
+                </div>
+              </div>
+            </div>
+            <div class="ocr-option" role="option">
+              <input type="radio" name="ocr_engine" value="gemini_vision" id="ocr_gemini" {% if form.ocr_engine.value == 'gemini_vision' %}checked{% endif %}>
+              <div class="ocr-info">
+                <div class="ocr-icon">✨</div>
+                <div class="ocr-details">
+                  <div class="ocr-name">Gemini Vision AI</div>
+                  <div class="ocr-desc">Advanced AI-powered direct text extraction</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          {% if form.ocr_engine.errors %}
+            <ul class="errorlist">{% for e in form.ocr_engine.errors %}<li>{{ e }}</li>{% endfor %}</ul>
+          {% endif %}
+        </div>
 
         <!-- Format Selection -->
         <div class="format-section">

@@ -10,9 +10,12 @@ import logging
 import io
 import os
 from datetime import datetime
+from django.conf import settings
 
 from .forms import DocumentUploadForm
-from .services import SessionService
+# Removed legacy imports of services/models to avoid heavy optional deps
+# Required services and models
+from .services import SessionService, SupabaseStorageService
 from .models import ProcessedDocument
 
 logger = logging.getLogger(__name__)
@@ -70,6 +73,7 @@ class DocumentUploadView(View):
             try:
                 uploaded_file = form.cleaned_data['file']
                 file_type = form.get_file_type()
+                ocr_engine = form.cleaned_data.get('ocr_engine', 'tesseract_gemini')
                 
                 # Upload to Supabase Storage
                 storage_service = SupabaseStorageService()
@@ -82,8 +86,13 @@ class DocumentUploadView(View):
                         filename=uploaded_file.name,
                         file_type=file_type,
                         file_size=uploaded_file.size,
-                        processing_status='pending'
+                        processing_status='pending',
+                        source_file_path=upload_result.get('file_path')
                     )
+                    
+                    # Store OCR engine preference in document metadata
+                    document.extracted_data = {'ocr_engine': ocr_engine}
+                    document.save()
                     
                     if is_ajax:
                         return JsonResponse({
@@ -161,6 +170,7 @@ def upload_ajax(request):
         if form.is_valid():
             uploaded_file = form.cleaned_data['file']
             file_type = form.get_file_type()
+            ocr_engine = form.cleaned_data.get('ocr_engine', 'tesseract_gemini')
             
             # Upload to Supabase Storage
             storage_service = SupabaseStorageService()
@@ -173,8 +183,13 @@ def upload_ajax(request):
                     filename=uploaded_file.name,
                     file_type=file_type,
                     file_size=uploaded_file.size,
-                    processing_status='pending'
+                    processing_status='pending',
+                    source_file_path=upload_result.get('file_path')
                 )
+                
+                # Store OCR engine preference in document metadata
+                document.extracted_data = {'ocr_engine': ocr_engine}
+                document.save()
                 
                 return JsonResponse({
                     'success': True,
@@ -272,7 +287,7 @@ def process_document(request):
                 'success': True,
                 'message': 'Document already processed',
                 'data': {
-                    'text': document.extracted_data.get('text', ''),
+                    'text': document.extracted_data.get('raw_text', ''),
                     'confidence': document.extracted_data.get('confidence', 0),
                     'word_count': document.extracted_data.get('word_count', 0),
                     'document_id': document.id
@@ -285,9 +300,9 @@ def process_document(request):
         document.error_details = {'stage': 'retrieving_file', 'progress': 10}
         document.save()
         
-        # Get file from storage
+        # Get file from storage (use stored source_file_path if available)
         storage_service = SupabaseStorageService()
-        file_path = f"{user_session.session_key}/{document.filename}"
+        file_path = document.source_file_path or f"{user_session.session_key}/{document.filename}"
         
         try:
             file_content = storage_service.get_file_content(file_path)
@@ -315,204 +330,228 @@ def process_document(request):
                 'retry_allowed': True
             })
         
-        # Complete processing workflow: OCR -> LLM -> Data Structuring -> File Generation
-        from .services import OCRService, LLMService, DataStructuringService, FileGenerationService
-        from datetime import datetime
-        
-        # Step 1: Extract text with OCR (for images/PDFs) or direct reading (for text files)
-        ocr_service = OCRService()
-        file_obj = io.BytesIO(file_content)
-        document.error_details = {'stage': 'ocr', 'progress': 30}
-        document.save(update_fields=['error_details'])
-        
+        # Get OCR engine preference from document metadata
+        ocr_engine = document.extracted_data.get('ocr_engine', 'tesseract_gemini')
+
+        # Decide Vision vs OCR based on user preference with config guard
+        use_vision = (ocr_engine == 'gemini_vision') and pipeline.should_use_gemini_vision()
+
+        # Determine file extension to branch logic
+        ext = os.path.splitext(document.filename)[1].lower()
+
+        # Run simplified pipeline: either Vision on images, or OCR+LLM on text
         try:
-            ocr_result = ocr_service.process_file(file_obj, document.file_type)
+            if use_vision:
+                document.error_details = {'stage': 'gemini_vision_processing', 'progress': 40}
+                document.save(update_fields=['error_details'])
+
+                # Prepare images for Vision depending on file type
+                images = []
+                if ext == '.pdf':
+                    # Extract pages as images then preprocess
+                    pdf_images = pipeline.images_from_pdf(io.BytesIO(file_content))
+                    for im in pdf_images:
+                        buf = io.BytesIO()
+                        im.save(buf, format='PNG')
+                        images.append(pipeline.preprocess_image(buf.getvalue()))
+                else:
+                    # Single image upload
+                    images = [pipeline.preprocess_image(file_content)]
+
+                structured_data = pipeline.structure_with_gemini_vision(images)
+                extracted_text = 'Processed with Gemini Vision'
+            else:
+                # OCR stage
+                document.error_details = {'stage': 'ocr', 'progress': 30}
+                document.save(update_fields=['error_details'])
+
+                if ext == '.pdf':
+                    text = pipeline.extract_text_from_pdf(io.BytesIO(file_content))
+                else:
+                    img = pipeline.preprocess_image(file_content)
+                    text = pipeline.extract_text_from_image(img)
+
+                extracted_text = text or ''
+
+                # LLM parsing stage
+                document.error_details = {'stage': 'llm_parsing', 'progress': 50}
+                document.save(update_fields=['error_details'])
+
+                structured_data = pipeline.call_gemini_to_structure(extracted_text)
         except Exception as processing_error:
             document.processing_status = 'failed'
-            document.error_message = f'Text extraction error: {str(processing_error)}'
-            document.error_details = {'stage': 'ocr', 'progress': 35}
+            document.error_message = f'Processing error: {str(processing_error)}'
+            # Choose appropriate stage context for error
+            current_stage = 'gemini_vision_processing' if use_vision else 'ocr'
+            document.error_details = {'stage': current_stage, 'progress': 45 if use_vision else 35}
             document.save()
-            
+
             return JsonResponse({
                 'success': False,
-                'error': 'Text extraction failed',
+                'error': 'Document processing failed',
                 'retry_allowed': True
             })
-        
-        if not ocr_result['success']:
-            document.processing_status = 'failed'
-            document.error_message = ocr_result.get('error', 'Text extraction failed')
-            document.error_details = {'stage': 'ocr', 'progress': 35}
-            document.save()
-            
-            return JsonResponse({
-                'success': False,
-                'error': ocr_result.get('error', 'Text extraction failed'),
-                'retry_allowed': ocr_result.get('retry_allowed', True)
-            })
-        
-        extracted_text = ocr_result['data']['text']
-        
-        # Step 2: Parse extracted text with LLM
-        llm_service = LLMService()
-        document.error_details = {'stage': 'llm_parsing', 'progress': 50}
-        document.save(update_fields=['error_details'])
-        
-        try:
-            llm_result = llm_service.parse_banking_document(extracted_text)
-        except Exception as llm_error:
-            document.processing_status = 'failed'
-            document.error_message = f'LLM parsing error: {str(llm_error)}'
-            document.error_details = {'stage': 'llm_parsing', 'progress': 55}
-            document.save()
-            
-            return JsonResponse({
-                'success': False,
-                'error': 'Document parsing failed',
-                'retry_allowed': True
-            })
-        
-        if not llm_result['success']:
-            document.processing_status = 'failed'
-            document.error_message = llm_result.get('error', 'LLM parsing failed')
-            document.error_details = {'stage': 'llm_parsing', 'progress': 55}
-            document.save()
-            
-            return JsonResponse({
-                'success': False,
-                'error': llm_result.get('error', 'Document parsing failed'),
-                'retry_allowed': llm_result.get('retry_allowed', True)
-            })
-        
-        parsed_data = llm_result['data']
-        
-        # Step 3: Structure the data
-        structuring_service = DataStructuringService()
-        document.error_details = {'stage': 'structuring', 'progress': 70}
-        document.save(update_fields=['error_details'])
-        
-        try:
-            structured_result = structuring_service.structure_banking_data(parsed_data)
-        except Exception as structuring_error:
-            document.processing_status = 'failed'
-            document.error_message = f'Data structuring error: {str(structuring_error)}'
-            document.error_details = {'stage': 'structuring', 'progress': 75}
-            document.save()
-            
-            return JsonResponse({
-                'success': False,
-                'error': 'Data structuring failed',
-                'retry_allowed': True
-            })
-        
-        if not structured_result['success']:
-            document.processing_status = 'failed'
-            document.error_message = structured_result.get('error', 'Data structuring failed')
-            document.error_details = {'stage': 'structuring', 'progress': 75}
-            document.save()
-            
-            return JsonResponse({
-                'success': False,
-                'error': structured_result.get('error', 'Data structuring failed'),
-                'retry_allowed': structured_result.get('retry_allowed', True)
-            })
-        
-        structured_data = structured_result['data']
-        
-        # Step 4: Generate output files
-        file_generation_service = FileGenerationService()
+
+        # Step: File generation (Excel + PDF)
         document.error_details = {'stage': 'file_generation', 'progress': 85}
         document.save(update_fields=['error_details'])
-        
+
+        # Excel bytes if we have any structured tables
+        excel_bytes = None
         try:
-            generation_result = file_generation_service.generate_all_formats(
-                structured_data, 
-                user_session.session_key
-            )
-        except Exception as generation_error:
-            document.processing_status = 'failed'
-            document.error_message = f'File generation error: {str(generation_error)}'
-            document.error_details = {'stage': 'file_generation', 'progress': 85}
-            document.save()
-            
-            return JsonResponse({
-                'success': False,
-                'error': 'File generation failed',
-                'retry_allowed': True
-            })
-        
-        if not generation_result['success']:
-            document.processing_status = 'failed'
-            document.error_message = generation_result.get('error', 'File generation failed')
-            document.error_details = {'stage': 'file_generation', 'progress': 85}
-            document.save()
-            
-            return JsonResponse({
-                'success': False,
-                'error': generation_result.get('error', 'File generation failed'),
-                'retry_allowed': generation_result.get('retry_allowed', True)
-            })
-        
-        # Step 5: Upload generated files to Supabase Storage
+            if structured_data and structured_data.get('tables'):
+                has_content = any(t.get('headers') or t.get('rows') for t in structured_data.get('tables', []))
+                if has_content:
+                    excel_bytes = pipeline.to_excel(structured_data)
+        except Exception:
+            excel_bytes = None
+
+        # PDF bytes: use structured rendering if possible else fallback to original/converted PDF
+        def _register_unicode_font() -> str:
+            env_path = os.getenv("PDF_FONT_PATH")
+            env_name = os.getenv("PDF_FONT_NAME", "CustomPDFUnicode")
+            if env_path:
+                try:
+                    if os.path.exists(env_path):
+                        pdfmetrics.registerFont(TTFont(env_name, env_path))
+                        return env_name
+                except Exception:
+                    pass
+            candidates = [
+                ("AbyssinicaSIL", "/usr/share/fonts/truetype/abyssinica/AbyssinicaSIL-Regular.ttf"),
+                ("DejaVuSans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                ("NotoSansEthiopic", "/usr/share/fonts/truetype/noto/NotoSansEthiopic-Regular.ttf"),
+                ("NotoSans", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"),
+            ]
+            for name, path in candidates:
+                try:
+                    if os.path.exists(path):
+                        pdfmetrics.registerFont(TTFont(name, path))
+                        return name
+                except Exception:
+                    continue
+            return "Helvetica"
+
+        def _build_pdf_from_structured(data) -> bytes:
+            buf = io.BytesIO()
+            c = canvas.Canvas(buf, pagesize=A4)
+            width, height = A4
+            left = 15 * mm
+            top = height - 20 * mm
+            line_h = 6 * mm
+            y = top
+            font_name = _register_unicode_font()
+            c.setFont(font_name, 10)
+            tables = (data or {}).get('tables', [])
+            if not tables:
+                c.drawString(left, y, "No structured tables available.")
+            else:
+                for ti, t in enumerate(tables, start=1):
+                    name = t.get('name') or f'Table {ti}'
+                    headers = t.get('headers', [])
+                    rows = t.get('rows', [])
+                    c.setFont(font_name, 11)
+                    c.drawString(left, y, str(name)[:100])
+                    y -= line_h
+                    c.setFont(font_name, 10)
+                    if headers:
+                        c.drawString(left, y, " | ".join([str(h) for h in headers])[:180])
+                        y -= line_h
+                    for r in rows:
+                        line = " | ".join([str(x) if x is not None else "" for x in r])
+                        while line:
+                            c.drawString(left, y, line[:120])
+                            line = line[120:]
+                            y -= line_h
+                            if y < 20 * mm:
+                                c.showPage(); y = top; c.setFont(font_name, 10)
+                    y -= line_h
+                    if y < 20 * mm:
+                        c.showPage(); y = top; c.setFont(font_name, 10)
+            c.showPage()
+            c.save()
+            return buf.getvalue()
+
+        pdf_bytes = None
+        try:
+            if structured_data and structured_data.get('tables'):
+                pdf_bytes = _build_pdf_from_structured(structured_data)
+        except Exception:
+            pdf_bytes = None
+        if not pdf_bytes:
+            if ext == '.pdf':
+                pdf_bytes = file_content
+            else:
+                try:
+                    # Convert original image(s) to PDF for fallback
+                    if use_vision and ext == '.pdf':
+                        # Already handled above
+                        pdf_bytes = file_content
+                    elif ext in ['.jpg', '.jpeg', '.png']:
+                        # Recreate original image for PDF
+                        orig_img = Image.open(io.BytesIO(file_content))
+                        pdf_bytes = pipeline.images_to_pdf([orig_img])
+                    else:
+                        pdf_bytes = file_content
+                except Exception:
+                    pdf_bytes = file_content
+
+        # Step: Upload outputs to Supabase
         storage_service = SupabaseStorageService()
         uploaded_files = {}
         document.error_details = {'stage': 'uploading_outputs', 'progress': 90}
         document.save(update_fields=['error_details'])
-        
-        for file_type, file_info in generation_result['files'].items():
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        base_name = os.path.splitext(document.filename)[0]
+
+        if excel_bytes:
+            excel_upload = SimpleUploadedFile(
+                name=f"{base_name}_cleaned.xlsx",
+                content=excel_bytes,
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
             try:
-                local_path = file_info['path']
-                if os.path.exists(local_path):
-                    # Read the generated file
-                    with open(local_path, 'rb') as f:
-                        file_content = f.read()
-                    
-                    # Create a file-like object for upload
-                    from django.core.files.uploadedfile import SimpleUploadedFile
-                    uploaded_file = SimpleUploadedFile(
-                        name=file_info['filename'],
-                        content=file_content,
-                        content_type={
-                            'excel': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                            'pdf': 'application/pdf',
-                            'doc': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                        }.get(file_type, 'application/octet-stream')
-                    )
-                    
-                    # Upload to storage
-                    upload_result = storage_service.upload_file(uploaded_file, user_session.session_key)
-                    
-                    if upload_result['success']:
-                        uploaded_files[file_type] = upload_result['file_path']
-                    else:
-                        logger.warning(f"Failed to upload {file_type} file: {upload_result.get('error')}")
-                        uploaded_files[file_type] = local_path  # Fallback to local path
-                    
-                    # Clean up local file
-                    try:
-                        os.remove(local_path)
-                    except:
-                        pass
-                        
-            except Exception as upload_error:
-                logger.error(f"Error uploading {file_type} file: {str(upload_error)}")
-                uploaded_files[file_type] = file_info['path']  # Fallback to local path
+                up_res = storage_service.upload_file(excel_upload, user_session.session_key)
+                if up_res.get('success'):
+                    uploaded_files['excel'] = up_res.get('file_path')
+            except Exception as e:
+                logger.warning(f"Excel upload failed: {e}")
+
+        if pdf_bytes:
+            pdf_upload = SimpleUploadedFile(
+                name=f"{base_name}_output.pdf",
+                content=pdf_bytes,
+                content_type='application/pdf'
+            )
+            try:
+                up_res = storage_service.upload_file(pdf_upload, user_session.session_key)
+                if up_res.get('success'):
+                    uploaded_files['pdf'] = up_res.get('file_path')
+            except Exception as e:
+                logger.warning(f"PDF upload failed: {e}")
         
         # Step 6: Update document with complete results
+        # Handle word count based on processing method
+        if ocr_engine == 'gemini_vision':
+            word_count = len((extracted_text or '').split())
+        else:
+            word_count = len((extracted_text or '').split())
+
         document.extracted_data = {
             'raw_text': extracted_text,
-            'parsed_data': parsed_data,
+            'parsed_data': structured_data,  # Keep a single structured payload
             'structured_data': structured_data,
-            'confidence': 0.8,  # Default confidence for simplified OCR
-            'word_count': ocr_result.get('data', {}).get('word_count', 0),
-            'processing_method': 'OCR+LLM' if document.file_type in ['jpg', 'jpeg', 'png', 'pdf'] else 'LLM',
+            'confidence': 0.8,
+            'word_count': word_count,
+            'processing_method': 'Vision AI' if ocr_engine == 'gemini_vision' else 'OCR+LLM',
             'processed_at': datetime.now().isoformat()
         }
-        
+
         # Store file paths (now in Supabase storage)
         document.excel_file_path = uploaded_files.get('excel')
         document.pdf_file_path = uploaded_files.get('pdf')
-        document.doc_file_path = uploaded_files.get('doc')
+        document.doc_file_path = None
         
         document.processing_status = 'completed'
         document.error_message = None
@@ -920,6 +959,111 @@ def download_file(request, document_id, file_type):
             'error': 'Could not download file'
         })
 
+# --- Diagnostics and health endpoints ---
+
+@require_http_methods(["GET"])
+def health_check(request):
+    """Basic health and configuration check for fast diagnostics."""
+    try:
+        from .services import LLMService, SupabaseStorageService
+
+        # Gemini status
+        llm = LLMService()
+        gemini = llm.test_api_connection()
+
+        # Supabase status
+        storage = SupabaseStorageService()
+        supabase_ok = bool(getattr(storage, 'supabase', None))
+        bucket = getattr(settings, 'SUPABASE_BUCKET_NAME', None)
+        # Light probe to bucket (best-effort)
+        storage_probe = None
+        if supabase_ok and bucket:
+            try:
+                storage_probe = storage.supabase.storage.from_(bucket).list("")
+                storage_probe = True if storage_probe is not None else False
+            except Exception:
+                storage_probe = False
+
+        return JsonResponse({
+            'success': True,
+            'timestamp': datetime.now().isoformat(),
+            'env': {
+                'DEBUG': settings.DEBUG,
+                'GEMINI_API_CONFIGURED': bool(getattr(settings, 'GEMINI_API_KEY', None)),
+                'SUPABASE_URL_SET': bool(getattr(settings, 'SUPABASE_URL', None)),
+                'SUPABASE_KEY_SET': bool(getattr(settings, 'SUPABASE_KEY', None) or getattr(settings, 'SUPABASE_SERVICE_KEY', None)),
+                'SUPABASE_BUCKET': bucket or None,
+            },
+            'services': {
+                'gemini': gemini.get('gemini', {}),
+                'supabase_client_initialized': supabase_ok,
+                'supabase_bucket_access': storage_probe,
+            }
+        })
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return JsonResponse({'success': False, 'error': 'Health check failed'})
+
+
+@require_http_methods(["GET"])
+def test_ocr_only(request, document_id):
+    """Run OCR only for a given uploaded document and return quick stats."""
+    try:
+        # Session and document
+        user_session, created, error = SessionService.get_or_create_session(request)
+        if error:
+            return JsonResponse({'success': False, 'error': error})
+
+        try:
+            document = ProcessedDocument.objects.get(id=document_id, session=user_session)
+        except ProcessedDocument.DoesNotExist:
+            return JsonResponse({'success': False, 'error': 'Document not found'})
+
+        # Download original file
+        from .services import SupabaseStorageService, OCRService
+        storage = SupabaseStorageService()
+        file_path = document.source_file_path or f"{user_session.session_key}/{document.filename}"
+        file_content = storage.get_file_content(file_path)
+        if not file_content:
+            return JsonResponse({'success': False, 'error': 'File not retrievable'})
+
+        # Run OCR
+        ocr = OCRService()
+        result = ocr.process_file(io.BytesIO(file_content), document.file_type)
+        if not result.get('success'):
+            return JsonResponse({'success': False, 'error': result.get('error', 'OCR failed')})
+
+        data = result.get('data', {})
+        text = data.get('text', '')
+        return JsonResponse({
+            'success': True,
+            'document_id': document.id,
+            'filename': document.filename,
+            'word_count': data.get('word_count', len(text.split())),
+            'text_sample': (text[:300] + '...') if len(text) > 300 else text,
+        })
+    except Exception as e:
+        logger.error(f"OCR test failed: {e}")
+        return JsonResponse({'success': False, 'error': 'OCR test failed'})
+
+
+@require_http_methods(["GET"])
+def test_llm_only(request):
+    """Run a quick LLM parse on provided text (?text=) or a built-in sample."""
+    try:
+        sample_text = request.GET.get('text') or (
+            "Account Statement for John Doe, Account: 123456789. "
+            "Balance: 1000.00. Transactions: 2024-08-01 Deposit 500.00 credit; "
+            "2024-08-03 ATM Withdrawal 200.00 debit. Bank: Sample Bank."
+        )
+
+        from .services import LLMService
+        llm = LLMService()
+        result = llm.parse_banking_document(sample_text)
+        return JsonResponse(result)
+    except Exception as e:
+        logger.error(f"LLM test failed: {e}")
+        return JsonResponse({'success': False, 'error': 'LLM test failed'})
 # --- Minimal simplified views ---
 from django.shortcuts import render, redirect
 from django.http import HttpResponse, HttpResponseBadRequest
@@ -955,9 +1099,11 @@ def process(request):
     f = form.cleaned_data['file']
     ext = os.path.splitext(f.name)[1].lower()
     output_format = form.cleaned_data.get('output_format') or 'excel'
+    ocr_engine = form.cleaned_data.get('ocr_engine') or 'tesseract_gemini'
 
     try:
-        use_vision = pipeline.should_use_gemini_vision()
+        # Honor user selection, but guard against missing Gemini Vision configuration
+        use_vision = pipeline.should_use_gemini_vision() if ocr_engine == 'gemini_vision' else False
 
         # Read the uploaded file once for consistent reuse
         try:
