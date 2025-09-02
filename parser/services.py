@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from django.conf import settings
 from supabase import create_client, Client
 import logging
-import pytesseract
 from PIL import Image
 import io
 import fitz  # PyMuPDF for PDF processing
@@ -18,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 # File generation imports
 from openpyxl import Workbook
 from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -260,118 +260,6 @@ class SessionService:
         inactive_sessions.update(is_active=False)
 
 
-class OCRService:
-    """Simplified service for extracting text from images using Tesseract OCR"""
-    
-    def __init__(self):
-        # Basic Tesseract configuration for Windows
-        if os.name == 'nt' and os.path.exists(r'C:\Program Files\Tesseract-OCR\tesseract.exe'):
-            pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    
-    def extract_text_from_image(self, image_file):
-        """Extract text from image file using OCR"""
-        try:
-            # Load image
-            if hasattr(image_file, 'read'):
-                image_file.seek(0)
-                image_data = image_file.read()
-                image = Image.open(io.BytesIO(image_data))
-            else:
-                image = Image.open(image_file)
-            
-            # Extract text directly
-            extracted_text = pytesseract.image_to_string(image)
-            cleaned_text = self._clean_text(extracted_text)
-            
-            if not cleaned_text.strip():
-                return ErrorHandler.error('No readable text found')
-            
-            return ErrorHandler.success('Text extracted successfully', {
-                'text': cleaned_text,
-                'word_count': len(cleaned_text.split())
-            })
-            
-        except Exception as e:
-            logger.error(f"OCR extraction failed: {str(e)}")
-            return ErrorHandler.error('OCR processing failed')
-    
-    def extract_text_from_pdf(self, pdf_file):
-        """Extract text from PDF file, using OCR for image-based PDFs"""
-        try:
-            # Load PDF
-            if hasattr(pdf_file, 'read'):
-                pdf_file.seek(0)
-                pdf_data = pdf_file.read()
-                pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
-            else:
-                pdf_document = fitz.open(pdf_file)
-            
-            all_text = []
-            
-            for page_num in range(len(pdf_document)):
-                page = pdf_document.load_page(page_num)
-                page_text = page.get_text()
-                
-                if page_text.strip():
-                    all_text.append(page_text)
-                else:
-                    # Image-based PDF - use OCR
-                    pix = page.get_pixmap()
-                    img_data = pix.tobytes("png")
-                    image = Image.open(io.BytesIO(img_data))
-                    
-                    ocr_result = self.extract_text_from_image(image)
-                    if ocr_result['success']:
-                        all_text.append(ocr_result['data']['text'])
-            
-            pdf_document.close()
-            combined_text = '\n\n'.join(all_text)
-            
-            return ErrorHandler.success('PDF processed successfully', {
-                'text': combined_text,
-                'word_count': len(combined_text.split())
-            })
-            
-        except Exception as e:
-            logger.error(f"PDF text extraction failed: {str(e)}")
-            return ErrorHandler.error('PDF processing failed')
-    
-    def _clean_text(self, text):
-        """Clean extracted text"""
-        if not text:
-            return ""
-        
-        # Basic cleanup - remove extra whitespace
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        return '\n'.join(lines)
-    
-    def process_file(self, file_obj, file_type):
-        """Process file based on type and extract text"""
-        file_type = file_type.lower()
-        
-        try:
-            if file_type in ['jpg', 'jpeg', 'png']:
-                return self.extract_text_from_image(file_obj)
-            elif file_type == 'pdf':
-                return self.extract_text_from_pdf(file_obj)
-            elif file_type == 'txt':
-                file_obj.seek(0)
-                content = file_obj.read()
-                if isinstance(content, bytes):
-                    content = content.decode('utf-8', errors='ignore')
-                
-                return ErrorHandler.success('Text file processed successfully', {
-                    'text': content,
-                    'word_count': len(content.split())
-                })
-            else:
-                return ErrorHandler.error(f'Unsupported file type: {file_type}')
-                
-        except Exception as e:
-            logger.error(f"File processing failed for {file_type}: {str(e)}")
-            return ErrorHandler.error('File processing failed')
-
-
 class LLMService:
     """Service for parsing extracted text using Google Gemini API with fallback parsing"""
     
@@ -382,11 +270,10 @@ class LLMService:
         if hasattr(settings, 'GEMINI_API_KEY') and settings.GEMINI_API_KEY:
             try:
                 genai.configure(api_key=settings.GEMINI_API_KEY)
-                # Use the configured model from settings, default to gemini-2.0-flash-exp
-                model_name = getattr(settings, 'GEMINI_MODEL', 'gemini-2.0-flash-exp')
+                # Default to Gemini 2.5 Flash, with Lite used elsewhere as fallback
+                model_name = getattr(settings, 'GEMINI_MODEL', 'gemini-2.5-flash')
                 self.gemini_client = genai.GenerativeModel(model_name)
-                # Vision model for direct image processing - use flash model to avoid quota issues
-                vision_model = getattr(settings, 'GEMINI_VISION_MODEL', 'gemini-2.0-flash-exp')
+                vision_model = getattr(settings, 'GEMINI_VISION_MODEL', 'gemini-2.5-flash')
                 self.vision_client = genai.GenerativeModel(vision_model)
                 logger.info(f"Gemini API initialized successfully with model: {model_name}")
             except Exception as e:
@@ -394,14 +281,14 @@ class LLMService:
                 self.gemini_client = None
                 self.vision_client = None
     
-    def parse_banking_document(self, text: str, document_type: str = "document", ocr_engine: str = "tesseract") -> Dict[str, Any]:
+    def parse_banking_document(self, text: str, document_type: str = "document", ocr_engine: str = "vision") -> Dict[str, Any]:
         """Parse document text using Gemini API or fallback pattern matching"""
         if not text or not text.strip():
             return {'success': False, 'error': 'No text provided for parsing', 'data': {}}
         
         # Try Gemini API first if available
         if self.gemini_client:
-            logger.info(f"Using Gemini API for document parsing (OCR engine: {ocr_engine})")
+            logger.info(f"Using Gemini API for document parsing (engine: {ocr_engine})")
             gemini_result = self._try_gemini_parsing(text, document_type, ocr_engine)
             if gemini_result['success']:
                 return gemini_result
@@ -662,27 +549,28 @@ class LLMService:
     
 
     
-    def _build_parsing_prompt(self, text: str, document_type: str, ocr_engine: str = "tesseract") -> str:
-        """Build flexible prompt for document parsing"""
-        ocr_context = ""
-        if ocr_engine == "tesseract":
-            ocr_context = "This text was extracted using OCR and may contain some errors."
-        
-        return f"""Parse this document and extract all the information exactly as it appears in the original layout. {ocr_context}
+    def _build_parsing_prompt(self, text: str, document_type: str, ocr_engine: str = "vision") -> str:
+        """Prompt tuned for PDF structuring and Excel-ready data handling."""
+        return f"""You are an expert multilingual financial document parser.
 
-CRITICAL: Preserve the exact structure, positioning, and formatting of the original document. If text contains Amharic/Ethiopian characters, preserve them exactly as they appear.
+Task: Produce structured JSON mirroring the original document layout and optimizing for Excel export.
 
-Extract information in JSON format that mirrors the original document structure:
-- If it's a table, preserve the exact table structure with rows and columns
-- If it's a list, maintain the list format  
-- If it's paragraph text, keep the paragraph structure
-- Preserve all languages (English, Amharic, numbers) exactly as written
-- Maintain spatial relationships between elements
+Rules:
+- Preserve original language (Amharic/Ethiopic and English) exactly; do not transliterate.
+- For tables: infer or preserve headers; normalize numeric cells (keep currency symbol/code); keep consistent column counts.
+- For key:value blocks: output a two-column table [key, value]. For lists/paragraphs: output rows preserving order.
+- Dates: prefer ISO YYYY-MM-DD when unambiguous, else keep original.
+- Remove obvious OCR artifacts only when highly confident; otherwise keep text as-is.
 
-Return valid JSON that represents the document's actual layout and content.
+Output STRICT JSON only with this schema:
+{{
+  "tables": [ {{ "name": string, "headers": [string], "rows": [[string]] }} ]
+}}
 
-Document Text:
-{text}"""
+Document type: {document_type}
+Text:
+{text}
+"""
     
     def _build_vision_prompt(self) -> str:
         """Build structure-preserving prompt for Gemini Vision API"""
@@ -854,108 +742,150 @@ class FileGenerationService:
         return results
     
     def generate_excel_file(self, data: Dict[str, Any], base_filename: str) -> Dict[str, Any]:
-        """Generate Excel file with raw data structure"""
+        """Generate Excel with proper tables, key-value headers, and widths."""
         try:
             wb = Workbook()
-            ws = wb.active
-            ws.title = "Data"
-            
-            row = 1
-            
-            # Add sections without titles - just the data
-            for section_name, section_data in data.items():
-                if not section_data or section_name == 'metadata':
-                    continue
-                
-                if isinstance(section_data, list):
-                    # Check if this is tabular data (list of dicts with similar structure)
-                    if section_data and isinstance(section_data[0], dict) and 'id' in section_data[0]:
-                        # Handle tabular data dynamically - no headers, just raw data
-                        first_item = section_data[0]
-                        headers = [key for key in first_item.keys() if key != 'id']
-                        
-                        for item in section_data:
-                            if isinstance(item, dict):
-                                for col, header in enumerate(headers, 1):
-                                    value = item.get(header, '')
-                                    ws.cell(row=row, column=col, value=str(value) if value is not None else '')
-                                row += 1
-                    else:
-                        # Handle key-value pairs lists - just values without field names
-                        for item in section_data:
-                            if isinstance(item, dict):
-                                value = item.get('value', '')
-                                ws.cell(row=row, column=1, value=str(value) if value else '')
-                                row += 1
-                elif isinstance(section_data, dict):
-                    # Handle key-value data - just values
-                    for key, value in section_data.items():
-                        ws.cell(row=row, column=1, value=str(value) if value is not None else '')
+            # remove default sheet; we'll add sheets as needed
+            default_ws = wb.active
+            wb.remove(default_ws)
+
+            def autosize(ws):
+                for col_idx in range(1, ws.max_column + 1):
+                    letter = get_column_letter(col_idx)
+                    max_len = 0
+                    for cell in ws.iter_rows(min_col=col_idx, max_col=col_idx, values_only=True):
+                        val = cell[0]
+                        if val is None:
+                            continue
+                        s = str(val)
+                        if len(s) > max_len:
+                            max_len = len(s)
+                    ws.column_dimensions[letter].width = min(max(10, max_len + 2), 60)
+
+            # 1) Direct support for LLM "tables" schema
+            if isinstance(data, dict) and isinstance(data.get('tables'), list) and data['tables']:
+                for tbl in data['tables']:
+                    title = (tbl.get('name') or 'Sheet')[:31]
+                    ws = wb.create_sheet(title)
+                    headers = tbl.get('headers') or []
+                    rows = tbl.get('rows') or []
+                    if headers:
+                        ws.append(headers)
+                        for i in range(1, len(headers) + 1):
+                            ws.cell(row=1, column=i).font = Font(bold=True)
+                        ws.freeze_panes = 'A2'
+                    for r in rows:
+                        ws.append(["" if v is None else v for v in r])
+                    autosize(ws)
+
+            # 2) Fallback: iterate other sections
+            else:
+                ws = wb.create_sheet('Data')
+                row = 1
+                for section_name, section_data in data.items():
+                    if not section_data or section_name == 'metadata':
+                        continue
+                    # tabular list of dicts (with or without id)
+                    if isinstance(section_data, list) and section_data and isinstance(section_data[0], dict):
+                        headers = [k for k in section_data[0].keys() if k != 'id'] or list(section_data[0].keys())
+                        ws.append(headers)
+                        for i in range(1, len(headers) + 1):
+                            ws.cell(row=row, column=i).font = Font(bold=True)
+                        ws.freeze_panes = f'A{row+1}'
                         row += 1
-            
+                        for item in section_data:
+                            ws.append([str(item.get(h, '')) for h in headers])
+                            row += 1
+                    elif isinstance(section_data, list):
+                        # list of primitives or dicts with field/value
+                        # ensure headers Field/Value when dicts present
+                        has_kv = any(isinstance(x, dict) and ('field' in x or 'value' in x) for x in section_data)
+                        if has_kv:
+                            ws.append(['Field', 'Value'])
+                            ws.cell(row=row, column=1).font = Font(bold=True)
+                            ws.cell(row=row, column=2).font = Font(bold=True)
+                            ws.freeze_panes = f'A{row+1}'
+                            row += 1
+                            for x in section_data:
+                                if isinstance(x, dict):
+                                    ws.append([str(x.get('field', '')), str(x.get('value', ''))])
+                                    row += 1
+                        else:
+                            for x in section_data:
+                                ws.cell(row=row, column=1, value=str(x))
+                                row += 1
+                    elif isinstance(section_data, dict):
+                        # two-column key:value
+                        ws.append(['Field', 'Value'])
+                        ws.cell(row=row, column=1).font = Font(bold=True)
+                        ws.cell(row=row, column=2).font = Font(bold=True)
+                        ws.freeze_panes = f'A{row+1}'
+                        row += 1
+                        for k, v in section_data.items():
+                            ws.append([str(k).title().replace('_', ' '), '' if v is None else str(v)])
+                            row += 1
+                autosize(ws)
+
             output_path = os.path.join(self.temp_dir, f"{base_filename}.xlsx")
             wb.save(output_path)
-            
-            return {
-                'success': True,
-                'path': output_path,
-                'filename': os.path.basename(output_path)
-            }
+            return {'success': True, 'path': output_path, 'filename': os.path.basename(output_path)}
         except Exception as e:
             return ErrorHandler.error(f'Excel generation failed: {str(e)}')
     
     def generate_pdf_file(self, data: Dict[str, Any], base_filename: str) -> Dict[str, Any]:
-        """Generate PDF file with raw data only"""
+        """Generate PDF with headers and proper tables when available."""
         try:
             output_path = os.path.join(self.temp_dir, f"{base_filename}.pdf")
             doc = SimpleDocTemplate(output_path, pagesize=letter)
-            
             styles = getSampleStyleSheet()
             story = []
-            
-            # Add sections without titles - just the raw data
-            for section_name, section_data in data.items():
-                if not section_data or section_name == 'metadata':
-                    continue
-                
-                if isinstance(section_data, list):
-                    # Check if this is tabular data
-                    if section_data and isinstance(section_data[0], dict) and 'id' in section_data[0]:
-                        # Create table with just data, no headers or styling
-                        first_item = section_data[0]
-                        headers = [key for key in first_item.keys() if key != 'id']
-                        table_data = []
-                        
-                        for item in section_data:
-                            if isinstance(item, dict):
-                                row_data = [str(item.get(header, '')) for header in headers]
-                                table_data.append(row_data)
-                        
-                        table = Table(table_data)
-                        table.setStyle(TableStyle([
-                            ('GRID', (0, 0), (-1, -1), 1, colors.black)
-                        ]))
-                        story.append(table)
-                    else:
-                        # Just the raw values without labels
-                        for item in section_data:
-                            if isinstance(item, dict):
-                                value = item.get('value', '')
-                                if value:
-                                    story.append(Paragraph(str(value), styles['Normal']))
-                elif isinstance(section_data, dict):
-                    # Just the raw values
-                    for key, value in section_data.items():
-                        if value:
-                            story.append(Paragraph(str(value), styles['Normal']))
-            
+
+            def table_with_header(headers, rows):
+                tbl = Table([headers] + rows)
+                tbl.setStyle(TableStyle([
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                    ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+                    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                    ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ]))
+                return tbl
+
+            # 1) Direct support for LLM "tables" schema
+            if isinstance(data, dict) and isinstance(data.get('tables'), list) and data['tables']:
+                for tbl in data['tables']:
+                    headers = tbl.get('headers') or []
+                    rows = [["" if v is None else str(v) for v in r] for r in (tbl.get('rows') or [])]
+                    if headers or rows:
+                        story.append(table_with_header(headers or [''], rows or [['']]))
+                        story.append(Spacer(1, 12))
+            else:
+                # Fallback: render sections
+                for section_name, section_data in data.items():
+                    if not section_data or section_name == 'metadata':
+                        continue
+                    if isinstance(section_data, list) and section_data and isinstance(section_data[0], dict):
+                        headers = [k for k in section_data[0].keys() if k != 'id'] or list(section_data[0].keys())
+                        rows = [[str(item.get(h, '')) for h in headers] for item in section_data]
+                        story.append(table_with_header(headers, rows))
+                        story.append(Spacer(1, 12))
+                    elif isinstance(section_data, list):
+                        has_kv = any(isinstance(x, dict) and ('field' in x or 'value' in x) for x in section_data)
+                        if has_kv:
+                            headers = ['Field', 'Value']
+                            rows = [[str(x.get('field', '')), str(x.get('value', ''))] for x in section_data if isinstance(x, dict)]
+                            story.append(table_with_header(headers, rows))
+                            story.append(Spacer(1, 12))
+                        else:
+                            for x in section_data:
+                                story.append(Paragraph(str(x), styles['Normal']))
+                    elif isinstance(section_data, dict):
+                        headers = ['Field', 'Value']
+                        rows = [[str(k).title().replace('_', ' '), '' if v is None else str(v)] for k, v in section_data.items()]
+                        story.append(table_with_header(headers, rows))
+                        story.append(Spacer(1, 12))
+
             doc.build(story)
-            
-            return {
-                'success': True,
-                'path': output_path,
-                'filename': os.path.basename(output_path)
-            }
+            return {'success': True, 'path': output_path, 'filename': os.path.basename(output_path)}
         except Exception as e:
             return ErrorHandler.error(f'PDF generation failed: {str(e)}')
     

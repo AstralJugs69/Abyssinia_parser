@@ -568,25 +568,15 @@ class DocumentProcessingIntegrationTest(TestCase):
         )
     
     @patch('parser.views.SessionService')
-    @patch('parser.services.OCRService')
     @patch('parser.services.LLMService')
     @patch('parser.services.DataStructuringService')
     @patch('parser.services.FileGenerationService')
     @patch('parser.services.SupabaseStorageService')
-    def test_complete_processing_workflow(self, mock_storage, mock_file_gen, mock_structuring, mock_llm, mock_ocr, mock_session_service):
+    def test_complete_processing_workflow(self, mock_storage, mock_file_gen, mock_structuring, mock_llm, mock_session_service):
         """Test the complete end-to-end processing workflow"""
         
         # Mock session service to return our test session
         mock_session_service.get_or_create_session.return_value = (self.session, False, None)
-        
-        # Mock OCR service
-        mock_ocr_instance = mock_ocr.return_value
-        mock_ocr_instance.process_file.return_value = {
-            'success': True,
-            'text': 'Bank Statement\nAccount: 123456789\nBalance: $1,000.00',
-            'confidence': 0.95,
-            'word_count': 8
-        }
         
         # Mock LLM service
         mock_llm_instance = mock_llm.return_value

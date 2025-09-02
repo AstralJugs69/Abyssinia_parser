@@ -73,7 +73,6 @@ class DocumentUploadView(View):
             try:
                 uploaded_file = form.cleaned_data['file']
                 file_type = form.get_file_type()
-                ocr_engine = form.cleaned_data.get('ocr_engine', 'tesseract_gemini')
                 
                 # Upload to Supabase Storage
                 storage_service = SupabaseStorageService()
@@ -89,10 +88,6 @@ class DocumentUploadView(View):
                         processing_status='pending',
                         source_file_path=upload_result.get('file_path')
                     )
-                    
-                    # Store OCR engine preference in document metadata
-                    document.extracted_data = {'ocr_engine': ocr_engine}
-                    document.save()
                     
                     if is_ajax:
                         return JsonResponse({
@@ -170,7 +165,6 @@ def upload_ajax(request):
         if form.is_valid():
             uploaded_file = form.cleaned_data['file']
             file_type = form.get_file_type()
-            ocr_engine = form.cleaned_data.get('ocr_engine', 'tesseract_gemini')
             
             # Upload to Supabase Storage
             storage_service = SupabaseStorageService()
@@ -186,10 +180,6 @@ def upload_ajax(request):
                     processing_status='pending',
                     source_file_path=upload_result.get('file_path')
                 )
-                
-                # Store OCR engine preference in document metadata
-                document.extracted_data = {'ocr_engine': ocr_engine}
-                document.save()
                 
                 return JsonResponse({
                     'success': True,
@@ -330,60 +320,35 @@ def process_document(request):
                 'retry_allowed': True
             })
         
-        # Get OCR engine preference from document metadata
-        ocr_engine = document.extracted_data.get('ocr_engine', 'tesseract_gemini')
-
-        # Decide Vision vs OCR based on user preference with config guard
-        use_vision = (ocr_engine == 'gemini_vision') and pipeline.should_use_gemini_vision()
-
         # Determine file extension to branch logic
         ext = os.path.splitext(document.filename)[1].lower()
 
-        # Run simplified pipeline: either Vision on images, or OCR+LLM on text
+        # Run simplified pipeline: Vision-only on images
         try:
-            if use_vision:
-                document.error_details = {'stage': 'gemini_vision_processing', 'progress': 40}
-                document.save(update_fields=['error_details'])
+            document.error_details = {'stage': 'gemini_vision_processing', 'progress': 40}
+            document.save(update_fields=['error_details'])
 
-                # Prepare images for Vision depending on file type
-                images = []
-                if ext == '.pdf':
-                    # Extract pages as images then preprocess
-                    pdf_images = pipeline.images_from_pdf(io.BytesIO(file_content))
-                    for im in pdf_images:
-                        buf = io.BytesIO()
-                        im.save(buf, format='PNG')
-                        images.append(pipeline.preprocess_image(buf.getvalue()))
-                else:
-                    # Single image upload
-                    images = [pipeline.preprocess_image(file_content)]
-
-                structured_data = pipeline.structure_with_gemini_vision(images)
-                extracted_text = 'Processed with Gemini Vision'
+            # Prepare images for Vision depending on file type
+            images = []
+            if ext == '.pdf':
+                # Extract pages as images then preprocess
+                pdf_images = pipeline.images_from_pdf(io.BytesIO(file_content))
+                for im in pdf_images:
+                    buf = io.BytesIO()
+                    im.save(buf, format='PNG')
+                    images.append(pipeline.preprocess_image(buf.getvalue()))
             else:
-                # OCR stage
-                document.error_details = {'stage': 'ocr', 'progress': 30}
-                document.save(update_fields=['error_details'])
+                # Single image upload
+                images = [pipeline.preprocess_image(file_content)]
 
-                if ext == '.pdf':
-                    text = pipeline.extract_text_from_pdf(io.BytesIO(file_content))
-                else:
-                    img = pipeline.preprocess_image(file_content)
-                    text = pipeline.extract_text_from_image(img)
-
-                extracted_text = text or ''
-
-                # LLM parsing stage
-                document.error_details = {'stage': 'llm_parsing', 'progress': 50}
-                document.save(update_fields=['error_details'])
-
-                structured_data = pipeline.call_gemini_to_structure(extracted_text)
+            structured_data = pipeline.structure_with_gemini_vision(images)
+            extracted_text = 'Processed with Gemini Vision'
         except Exception as processing_error:
             document.processing_status = 'failed'
             document.error_message = f'Processing error: {str(processing_error)}'
             # Choose appropriate stage context for error
-            current_stage = 'gemini_vision_processing' if use_vision else 'ocr'
-            document.error_details = {'stage': current_stage, 'progress': 45 if use_vision else 35}
+            current_stage = 'gemini_vision_processing'
+            document.error_details = {'stage': current_stage, 'progress': 45}
             document.save()
 
             return JsonResponse({
@@ -484,10 +449,7 @@ def process_document(request):
             else:
                 try:
                     # Convert original image(s) to PDF for fallback
-                    if use_vision and ext == '.pdf':
-                        # Already handled above
-                        pdf_bytes = file_content
-                    elif ext in ['.jpg', '.jpeg', '.png']:
+                    if ext in ['.jpg', '.jpeg', '.png']:
                         # Recreate original image for PDF
                         orig_img = Image.open(io.BytesIO(file_content))
                         pdf_bytes = pipeline.images_to_pdf([orig_img])
@@ -532,11 +494,7 @@ def process_document(request):
                 logger.warning(f"PDF upload failed: {e}")
         
         # Step 6: Update document with complete results
-        # Handle word count based on processing method
-        if ocr_engine == 'gemini_vision':
-            word_count = len((extracted_text or '').split())
-        else:
-            word_count = len((extracted_text or '').split())
+        word_count = len((extracted_text or '').split())
 
         document.extracted_data = {
             'raw_text': extracted_text,
@@ -544,7 +502,7 @@ def process_document(request):
             'structured_data': structured_data,
             'confidence': 0.8,
             'word_count': word_count,
-            'processing_method': 'Vision AI' if ocr_engine == 'gemini_vision' else 'OCR+LLM',
+            'processing_method': 'Vision AI',
             'processed_at': datetime.now().isoformat()
         }
 
@@ -1005,46 +963,7 @@ def health_check(request):
         return JsonResponse({'success': False, 'error': 'Health check failed'})
 
 
-@require_http_methods(["GET"])
-def test_ocr_only(request, document_id):
-    """Run OCR only for a given uploaded document and return quick stats."""
-    try:
-        # Session and document
-        user_session, created, error = SessionService.get_or_create_session(request)
-        if error:
-            return JsonResponse({'success': False, 'error': error})
-
-        try:
-            document = ProcessedDocument.objects.get(id=document_id, session=user_session)
-        except ProcessedDocument.DoesNotExist:
-            return JsonResponse({'success': False, 'error': 'Document not found'})
-
-        # Download original file
-        from .services import SupabaseStorageService, OCRService
-        storage = SupabaseStorageService()
-        file_path = document.source_file_path or f"{user_session.session_key}/{document.filename}"
-        file_content = storage.get_file_content(file_path)
-        if not file_content:
-            return JsonResponse({'success': False, 'error': 'File not retrievable'})
-
-        # Run OCR
-        ocr = OCRService()
-        result = ocr.process_file(io.BytesIO(file_content), document.file_type)
-        if not result.get('success'):
-            return JsonResponse({'success': False, 'error': result.get('error', 'OCR failed')})
-
-        data = result.get('data', {})
-        text = data.get('text', '')
-        return JsonResponse({
-            'success': True,
-            'document_id': document.id,
-            'filename': document.filename,
-            'word_count': data.get('word_count', len(text.split())),
-            'text_sample': (text[:300] + '...') if len(text) > 300 else text,
-        })
-    except Exception as e:
-        logger.error(f"OCR test failed: {e}")
-        return JsonResponse({'success': False, 'error': 'OCR test failed'})
+    
 
 
 @require_http_methods(["GET"])
@@ -1099,11 +1018,10 @@ def process(request):
     f = form.cleaned_data['file']
     ext = os.path.splitext(f.name)[1].lower()
     output_format = form.cleaned_data.get('output_format') or 'excel'
-    ocr_engine = form.cleaned_data.get('ocr_engine') or 'tesseract_gemini'
 
     try:
-        # Honor user selection, but guard against missing Gemini Vision configuration
-        use_vision = pipeline.should_use_gemini_vision() if ocr_engine == 'gemini_vision' else False
+        # Vision-only processing
+        use_vision = True
 
         # Read the uploaded file once for consistent reuse
         try:
@@ -1119,26 +1037,18 @@ def process(request):
             # Keep original image for PDF fallback
             orig_img = Image.open(io.BytesIO(file_bytes))
             original_images = [orig_img]
-            # Preprocess for OCR/LLM
+            # Preprocess and send to Vision
             img = pipeline.preprocess_image(file_bytes)
-            if use_vision:
-                structured = pipeline.structure_with_gemini_vision([img])
-            else:
-                text = pipeline.extract_text_from_image(img)
-                structured = pipeline.call_gemini_to_structure(text)
+            structured = pipeline.structure_with_gemini_vision([img])
         elif ext == '.pdf':
-            if use_vision:
-                # Extract images from PDF, preprocess, and send to Vision
-                images = pipeline.images_from_pdf(io.BytesIO(file_bytes))
-                proc_images = []
-                for im in images:
-                    buf = io.BytesIO()
-                    im.save(buf, format='PNG')
-                    proc_images.append(pipeline.preprocess_image(buf.getvalue()))
-                structured = pipeline.structure_with_gemini_vision(proc_images)
-            else:
-                text = pipeline.extract_text_from_pdf(io.BytesIO(file_bytes))
-                structured = pipeline.call_gemini_to_structure(text)
+            # Extract images from PDF, preprocess, and send to Vision
+            images = pipeline.images_from_pdf(io.BytesIO(file_bytes))
+            proc_images = []
+            for im in images:
+                buf = io.BytesIO()
+                im.save(buf, format='PNG')
+                proc_images.append(pipeline.preprocess_image(buf.getvalue()))
+            structured = pipeline.structure_with_gemini_vision(proc_images)
         else:
             return HttpResponseBadRequest('Unsupported file type')
 

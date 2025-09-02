@@ -1,5 +1,4 @@
 Django==5.2.5
-pytesseract==0.3.13
 google-generativeai==0.8.3
 openpyxl==3.1.5
 python-dotenv==1.0.1
