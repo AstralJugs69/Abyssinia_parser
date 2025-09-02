@@ -18,20 +18,20 @@
        hidden>
   </div>
   <div id="loadingOverlay" class="overlay" role="alertdialog" aria-live="polite" aria-label="Processing document">
-    <div class="overlay-card">
-      <div class="rowc">
-        <div class="spinner" aria-hidden="true"></div>
-        <div>
-          <div id="stageTitle"><strong>Preparing upload…</strong></div>
-          <div id="stageDesc" class="muted">Please wait while we process your document.</div>
-        </div>
+    <div class="overlay-card overlay-card-lg">
+      <div class="loader-wrap" aria-hidden="true">
+        <object id="loaderSvg" type="image/svg+xml" data="{% static 'parser/images/loader-anim.svg' %}" tabindex="-1" aria-hidden="true"></object>
+      </div>
+      <div class="stage">
+        <div id="stageTitle" class="stage-title"><strong>Preparing upload…</strong></div>
+        <div id="stageDesc" class="muted stage-desc">Please wait while we process your document.</div>
       </div>
     </div>
   </div>
   <!-- Header -->
   <header class="site-bar">
     <div class="brand">
-      <img src="{% static 'parser/images/bank-logo.svg' %}" alt="Bank of Abyssinia Logo" class="brand-logo">
+      <img src="{% static 'parser/images/Bank of abyssinia logo.svg' %}" alt="Bank of Abyssinia Logo" class="brand-logo">
     </div>
   </header>
 

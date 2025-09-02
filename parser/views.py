@@ -408,6 +408,21 @@ def process_document(request):
             font_name = _register_unicode_font()
             c.setFont(font_name, 10)
             tables = (data or {}).get('tables', [])
+            # Detect if non-ASCII content present
+            def _has_non_ascii(tbls):
+                for t in tbls or []:
+                    if any(any(ord(ch) > 127 for ch in (h or "")) for h in t.get('headers', []) or []):
+                        return True
+                    for row in t.get('rows', []) or []:
+                        for cell in row:
+                            s = str(cell) if cell is not None else ""
+                            if any(ord(ch) > 127 for ch in s):
+                                return True
+                return False
+
+            # If we don't have a Unicode font and content has non-ASCII, signal fallback
+            if font_name == "Helvetica" and _has_non_ascii(tables):
+                return b""
             if not tables:
                 c.drawString(left, y, "No structured tables available.")
             else:

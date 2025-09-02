@@ -19,32 +19,64 @@ except Exception:  # pragma: no cover
 # --- Image helpers ---
 
 def preprocess_image(image_bytes: bytes) -> Image.Image:
+    """Lightweight preprocessing with tunable speed/quality via env.
+
+    PREPROCESS_SCALE (float): scale factor (default 1.5)
+    PREPROCESS_FAST (bool): if true, skip heavier filters (default true)
+    """
     image = Image.open(io.BytesIO(image_bytes))
-    # Convert to grayscale
     image = image.convert("L")
-    # Upscale to help OCR on handwriting
+
+    # Tunable scaling
+    try:
+        scale = float(os.getenv("PREPROCESS_SCALE", "1.5"))
+    except Exception:
+        scale = 1.5
     try:
         w, h = image.size
-        image = image.resize((int(w * 2), int(h * 2)), Image.LANCZOS)
+        if scale and scale != 1.0:
+            image = image.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
     except Exception:
         pass
-    # Enhance contrast and sharpness
-    image = ImageEnhance.Contrast(image).enhance(1.8)
+
+    fast = os.getenv("PREPROCESS_FAST", "true").lower() == "true"
+    # Enhance contrast and sharpness (lighter when fast)
+    contrast = 1.4 if fast else 1.8
+    sharp = 1.2 if fast else 1.6
+    image = ImageEnhance.Contrast(image).enhance(contrast)
     image = ImageOps.autocontrast(image)
-    image = image.filter(ImageFilter.MedianFilter(size=3))
-    image = ImageEnhance.Sharpness(image).enhance(1.6)
+    if not fast:
+        image = image.filter(ImageFilter.MedianFilter(size=3))
+    image = ImageEnhance.Sharpness(image).enhance(sharp)
     return image
 
 def images_from_pdf(file_obj) -> List[Image.Image]:
-    # Return PIL images for all pages at higher DPI for better OCR
+    """Return PIL images from PDF pages with tunable DPI and page limit.
+
+    GEMINI_PDF_DPI (int): rasterization DPI (default 200)
+    GEMINI_MAX_PAGES (int): max pages to process (default 4)
+    """
     data = file_obj.read()
+    try:
+        dpi = int(os.getenv("GEMINI_PDF_DPI", "200"))
+    except Exception:
+        dpi = 200
+    try:
+        max_pages = int(os.getenv("GEMINI_MAX_PAGES", "4"))
+    except Exception:
+        max_pages = 4
+
     doc = fitz.open(stream=data, filetype="pdf")
     images: List[Image.Image] = []
-    for page in doc:
-        pix = page.get_pixmap(dpi=300)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        images.append(img)
-    doc.close()
+    try:
+        for i, page in enumerate(doc):
+            if max_pages > 0 and i >= max_pages:
+                break
+            pix = page.get_pixmap(dpi=dpi)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            images.append(img)
+    finally:
+        doc.close()
     return images
 
 
@@ -115,8 +147,15 @@ def structure_with_gemini_vision(images: List[Image.Image]) -> Dict[str, Any]:
         "- Output JSON only. No comments or markdown.\n"
     )
 
+    # Cap images sent to the model for latency control
+    try:
+        max_images = int(os.getenv("GEMINI_MAX_IMAGES", "4"))
+    except Exception:
+        max_images = 4
+    use_images = images[:max_images]
+
     parts: List[Any] = [prompt, "\n--- IMAGES START ---\n"]
-    for img in images:
+    for img in use_images:
         parts.append(_image_to_part(img))
     parts.append("\n--- IMAGES END ---\n")
 
