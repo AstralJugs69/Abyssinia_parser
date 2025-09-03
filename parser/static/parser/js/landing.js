@@ -9,6 +9,8 @@
   const stageDesc = document.getElementById('stageDesc');
   const tiles = document.querySelectorAll('.tile');
   const cfgEl = document.getElementById('appConfig');
+  // Track overlay visibility to avoid restarting animation mid-process
+  let overlayActive = false;
 
   // Config helpers
   function cfg(name){ return cfgEl ? cfgEl.getAttribute(name) : null; }
@@ -33,16 +35,32 @@
 
   function showOverlay(title, desc){
     if(!overlay) return;
+    const wasShown = overlay.classList.contains('show');
     overlay.classList.add('show');
     if(stageTitle) stageTitle.innerHTML = '<strong>' + (title || 'Working…') + '</strong>';
     if(stageDesc) stageDesc.textContent = desc || '';
+    // Restart loader SVG animation ONLY when overlay transitions to visible
+    if (!wasShown && !overlayActive) {
+      try {
+        const obj = document.getElementById('loaderSvg');
+        if (obj && obj.tagName.toLowerCase() === 'object') {
+          const base = obj.getAttribute('data');
+          if (base) {
+            const url = new URL(base, window.location.origin);
+            url.searchParams.set('t', Date.now().toString());
+            obj.setAttribute('data', url.toString());
+          }
+        }
+      } catch(_) { /* noop */ }
+      overlayActive = true;
+    }
     // Show OCR engine section when file is selected
     const ocrSection = document.getElementById('ocr-engine-section');
     if(ocrSection && fileInput && fileInput.files && fileInput.files.length) {
       ocrSection.style.display = 'block';
     }
   }
-  function hideOverlay(){ overlay && overlay.classList.remove('show'); }
+  function hideOverlay(){ if(overlay){ overlay.classList.remove('show'); } overlayActive = false; }
   window.addEventListener('beforeunload', hideOverlay);
 
   function updateFileName(){
@@ -151,7 +169,9 @@
     file_generation: { t: 'Exporting…', d: 'Generating downloadable files.' },
     uploading_outputs: { t: 'Finalizing…', d: 'Uploading results securely.' },
     completed: { t: 'Done!', d: 'Preparing your download…' },
-    failed: { t: 'Processing failed', d: 'Please try again.' }
+    failed: { t: 'Processing failed', d: 'Please try again.' },
+    // Backend sometimes uses this more specific stage name
+    gemini_vision_processing: { t: 'Analyzing with Vision AI…', d: 'Extracting and structuring tables.' }
   };
 
   function applyStage(stage, progress){

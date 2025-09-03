@@ -12,6 +12,17 @@ import os
 from datetime import datetime
 from django.conf import settings
 
+# Added: dependencies used in processing and PDF generation
+from reportlab.pdfbase import pdfmetrics  # type: ignore
+from reportlab.pdfbase.ttfonts import TTFont  # type: ignore
+from reportlab.lib.pagesizes import A4  # type: ignore
+from reportlab.pdfgen import canvas  # type: ignore
+from reportlab.lib.units import mm  # type: ignore
+from PIL import Image  # type: ignore
+
+# Added: local OCR/LLM pipeline utilities referenced below
+from . import ocr_pipeline as pipeline
+
 from .forms import DocumentUploadForm
 # Removed legacy imports of services/models to avoid heavy optional deps
 # Required services and models
