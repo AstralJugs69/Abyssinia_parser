@@ -217,7 +217,7 @@ class SessionService:
     
     @staticmethod
     def get_or_create_session(request):
-        """Get or create user session with concurrent limit check"""
+        """Get or create user session"""
         from .models import UserSession
         
         session_key = request.session.session_key
@@ -233,9 +233,6 @@ class SessionService:
             return user_session, False, None
             
         except UserSession.DoesNotExist:
-            if UserSession.get_active_session_count() >= 4:
-                return None, False, "System is at capacity (4 users). Please try again later."
-            
             user_session = UserSession.objects.create(
                 session_key=session_key,
                 is_active=True
@@ -313,12 +310,38 @@ class LLMService:
             
             # Process with Gemini Vision
             response = self.vision_client.generate_content([prompt, image])
-            
-            if not response.text:
+
+            # Safely extract text from Gemini response
+            resp_text = ""
+            try:
+                resp_text = (getattr(response, "text", None) or "").strip()
+            except Exception:
+                resp_text = ""
+            if not resp_text:
+                try:
+                    for cand in getattr(response, "candidates", []) or []:
+                        content = getattr(cand, "content", None)
+                        parts = getattr(content, "parts", None) if content else None
+                        if not parts:
+                            continue
+                        buf = []
+                        for p in parts:
+                            t = getattr(p, "text", None)
+                            if t:
+                                buf.append(t)
+                            elif isinstance(p, dict) and p.get("text"):
+                                buf.append(str(p["text"]))
+                        if buf:
+                            resp_text = "\n".join(buf)
+                            break
+                except Exception:
+                    resp_text = ""
+
+            if not resp_text:
                 return {'success': False, 'error': 'No response from Gemini Vision', 'data': {}}
             
             # Parse the response
-            parsed_data = self._parse_llm_response(response.text)
+            parsed_data = self._parse_llm_response(resp_text)
             if parsed_data:
                 return {
                     'success': True,
@@ -348,10 +371,35 @@ class LLMService:
                     future = executor.submit(_call_model)
                     response = future.result(timeout=90)  # Increased timeout for better models
                 
-                if not response.text:
+                # Safely extract text; skip if none
+                resp_text = ""
+                try:
+                    resp_text = (getattr(response, "text", None) or "").strip()
+                except Exception:
+                    resp_text = ""
+                if not resp_text:
+                    try:
+                        for cand in getattr(response, "candidates", []) or []:
+                            content = getattr(cand, "content", None)
+                            parts = getattr(content, "parts", None) if content else None
+                            if not parts:
+                                continue
+                            buf = []
+                            for p in parts:
+                                t = getattr(p, "text", None)
+                                if t:
+                                    buf.append(t)
+                                elif isinstance(p, dict) and p.get("text"):
+                                    buf.append(str(p["text"]))
+                            if buf:
+                                resp_text = "\n".join(buf)
+                                break
+                    except Exception:
+                        resp_text = ""
+                if not resp_text:
                     continue
                 
-                parsed_data = self._parse_llm_response(response.text)
+                parsed_data = self._parse_llm_response(resp_text)
                 if parsed_data:
                     return {
                         'success': True,
@@ -550,17 +598,28 @@ class LLMService:
 
     
     def _build_parsing_prompt(self, text: str, document_type: str, ocr_engine: str = "vision") -> str:
-        """Prompt tuned for PDF structuring and Excel-ready data handling."""
+        """Prompt for structuring text while preserving exact character representation."""
         return f"""You are an expert multilingual financial document parser.
 
-Task: Produce structured JSON mirroring the original document layout and optimizing for Excel export.
+Task: Structure the provided text into JSON format WITHOUT modifying any characters, words, or formatting. If no table can be inferred, fall back to a single table named 'main' with headers ['text'] and rows = each input line as a separate row (preserve order).
 
-Rules:
-- Preserve original language (Amharic/Ethiopic and English) exactly; do not transliterate.
-- For tables: infer or preserve headers; normalize numeric cells (keep currency symbol/code); keep consistent column counts.
-- For key:value blocks: output a two-column table [key, value]. For lists/paragraphs: output rows preserving order.
-- Dates: prefer ISO YYYY-MM-DD when unambiguous, else keep original.
-- Remove obvious OCR artifacts only when highly confident; otherwise keep text as-is.
+CRITICAL CHARACTER PRESERVATION RULES:
+- NEVER autocorrect, fix, or modify any characters, words, or text from the input
+- NEVER fix what appears to be OCR errors or typos - preserve them EXACTLY
+- NEVER transliterate Amharic/Ethiopic characters to Latin script
+- NEVER normalize or standardize formatting - keep original spacing, punctuation
+- NEVER correct obvious mistakes like 0/O, 1/l, 5/S - transcribe exactly as provided
+- NEVER standardize dates or numbers - keep original format exactly
+- NEVER add missing punctuation or correct grammar
+- NEVER change case (uppercase/lowercase) from what is provided
+
+STRUCTURING RULES:
+- Copy each character, symbol, and space EXACTLY as provided in the input text
+- For tables: preserve headers exactly as written; maintain original column structure
+- For key:value pairs: output as two-column table [key, value] with exact text
+- For lists/paragraphs: output as single-column table preserving original line breaks
+- Maintain original text order and formatting
+- If structure is unclear, default to single-column table with original text
 
 Output STRICT JSON only with this schema:
 {{
@@ -568,25 +627,36 @@ Output STRICT JSON only with this schema:
 }}
 
 Document type: {document_type}
-Text:
+Input text to preserve exactly:
 {text}
 """
     
     def _build_vision_prompt(self) -> str:
-        """Build structure-preserving prompt for Gemini Vision API"""
-        return """Analyze this document image and extract all information exactly as it appears in the original layout.
+        """Build character-preserving prompt for Gemini Vision API"""
+        return """Extract all text from this document image with ABSOLUTE CHARACTER PRESERVATION.
 
-CRITICAL: Preserve the exact structure, positioning, and formatting of the original document. If text contains Amharic/Ethiopian characters, preserve them exactly as they appear.
+If you cannot confidently detect a table, produce a single table named 'main' with headers ['text'] and rows = each visual line as a separate row (preserve order).
 
-Extract information in JSON format that mirrors the original document structure:
-- If it's a table, preserve the exact table structure with rows and columns in the same order
-- If it's a list, maintain the list format and sequence
-- If it's paragraph text, keep the paragraph structure and line breaks
-- Preserve all languages (English, Amharic, numbers) exactly as written
-- Maintain spatial relationships and positioning between elements
-- Keep the original reading order (top to bottom, left to right)
+CRITICAL CHARACTER PRESERVATION RULES:
+- NEVER autocorrect, fix, or modify any characters, words, or text you see
+- NEVER fix what appears to be OCR errors, typos, or misspellings - transcribe EXACTLY
+- NEVER transliterate Amharic/Ethiopian characters to Latin script - preserve original script
+- NEVER normalize or standardize formatting - keep original spacing and punctuation
+- NEVER correct obvious mistakes like 0/O, 1/l, 5/S - transcribe exactly as shown in image
+- NEVER standardize dates, numbers, or currency - keep original format (e.g., 12/5/23, not 2023-05-12)
+- NEVER add missing punctuation or correct grammar
+- NEVER change case (uppercase/lowercase) from what is visible
+- NEVER interpret or translate abbreviations - copy exactly as shown
 
-Return valid JSON that represents the document's actual visual layout and content."""
+EXTRACTION INSTRUCTIONS:
+- Copy each visible character, symbol, digit, and space EXACTLY as it appears
+- Preserve all original formatting, spacing, line breaks, and alignment
+- Include all visible text: printed, handwritten, stamps, signatures, watermarks
+- Maintain exact table structure with original headers and cell content
+- Preserve spatial relationships and reading order (top to bottom, left to right)
+- If text is unclear, transcribe your best visual interpretation without correcting
+
+Return structured JSON that contains the document's exact visual content without any modifications."""
     
     def _parse_llm_response(self, response_text: str) -> Optional[Dict[str, Any]]:
         """Parse LLM response and extract JSON data - flexible parsing"""

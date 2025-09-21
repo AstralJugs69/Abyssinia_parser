@@ -95,11 +95,11 @@ Create basic templates for each output format:
 - Track processing status and timestamps
 - Leverage Supabase's built-in authentication and real-time features if needed
 
-### Concurrent Usage Limitation
+### Session Management
 
-- **Maximum 4 simultaneous instances** across different devices
-- Implement session-based limiting
-- Display appropriate messages when limit is reached
+- Track user sessions for cleanup and maintenance purposes
+- Implement automatic cleanup of inactive sessions
+- Maintain session state across requests
 
 ## User Interface Requirements
 
@@ -220,7 +220,7 @@ Create basic templates for each output format:
 - Extract structured data with reasonable accuracy
 - Generate all three output formats (Excel, PDF, DOC)
 - Handle errors gracefully
-- Support 4 concurrent users
+- Support multiple concurrent users
 - Simple, functional user interface
 
 ### Quality Metrics

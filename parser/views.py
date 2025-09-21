@@ -55,8 +55,7 @@ class DocumentUploadView(View):
         context = {
             'form': form,
             'documents': documents,
-            'session_created': created,
-            'active_sessions': user_session.get_active_session_count() if user_session else 0
+            'session_created': created
         }
         
         return render(request, 'parser/upload.html', context)
@@ -409,6 +408,9 @@ def process_document(request):
             return "Helvetica"
 
         def _build_pdf_from_structured(data) -> bytes:
+            """Build a PDF only when there is meaningful structured content.
+            Return empty bytes to trigger fallback when tables are empty or trivial.
+            """
             buf = io.BytesIO()
             c = canvas.Canvas(buf, pagesize=A4)
             width, height = A4
@@ -419,6 +421,21 @@ def process_document(request):
             font_name = _register_unicode_font()
             c.setFont(font_name, 10)
             tables = (data or {}).get('tables', [])
+
+            # Helper: detect if there is any non-trivial content
+            def _table_has_content(t):
+                headers = t.get('headers', []) or []
+                rows = t.get('rows', []) or []
+                # Consider content meaningful ONLY if there is at least one row with any non-empty cell
+                if rows:
+                    for row in rows:
+                        if any((str(cell).strip() if cell is not None else "") for cell in (row or [])):
+                            return True
+                # Header-only with zero rows is considered trivial (no content)
+                return False
+
+            has_any_content = any(_table_has_content(t) for t in (tables or []))
+
             # Detect if non-ASCII content present
             def _has_non_ascii(tbls):
                 for t in tbls or []:
@@ -434,31 +451,33 @@ def process_document(request):
             # If we don't have a Unicode font and content has non-ASCII, signal fallback
             if font_name == "Helvetica" and _has_non_ascii(tables):
                 return b""
-            if not tables:
-                c.drawString(left, y, "No structured tables available.")
-            else:
-                for ti, t in enumerate(tables, start=1):
-                    name = t.get('name') or f'Table {ti}'
-                    headers = t.get('headers', [])
-                    rows = t.get('rows', [])
-                    c.setFont(font_name, 11)
-                    c.drawString(left, y, str(name)[:100])
+
+            # If there is no meaningful content, signal fallback so we return original/converted PDF
+            if not has_any_content:
+                return b""
+
+            for ti, t in enumerate(tables or [], start=1):
+                name = t.get('name') or f'Table {ti}'
+                headers = t.get('headers', []) or []
+                rows = t.get('rows', []) or []
+                c.setFont(font_name, 11)
+                c.drawString(left, y, str(name)[:100])
+                y -= line_h
+                c.setFont(font_name, 10)
+                if headers:
+                    c.drawString(left, y, " | ".join([str(h) for h in headers])[:180])
                     y -= line_h
-                    c.setFont(font_name, 10)
-                    if headers:
-                        c.drawString(left, y, " | ".join([str(h) for h in headers])[:180])
+                for r in rows:
+                    line = " | ".join([str(x) if x is not None else "" for x in r])
+                    while line:
+                        c.drawString(left, y, line[:120])
+                        line = line[120:]
                         y -= line_h
-                    for r in rows:
-                        line = " | ".join([str(x) if x is not None else "" for x in r])
-                        while line:
-                            c.drawString(left, y, line[:120])
-                            line = line[120:]
-                            y -= line_h
-                            if y < 20 * mm:
-                                c.showPage(); y = top; c.setFont(font_name, 10)
-                    y -= line_h
-                    if y < 20 * mm:
-                        c.showPage(); y = top; c.setFont(font_name, 10)
+                        if y < 20 * mm:
+                            c.showPage(); y = top; c.setFont(font_name, 10)
+                y -= line_h
+                if y < 20 * mm:
+                    c.showPage(); y = top; c.setFont(font_name, 10)
             c.showPage()
             c.save()
             return buf.getvalue()
@@ -1114,6 +1133,7 @@ def process(request):
             return "Helvetica"
 
         def build_pdf_from_structured(data) -> bytes:
+            """Return empty bytes to trigger fallback when there is no meaningful content."""
             # Simple text-embedded PDF using ReportLab
             buf = io.BytesIO()
             c = canvas.Canvas(buf, pagesize=A4)
@@ -1125,33 +1145,45 @@ def process(request):
             font_name = _register_unicode_font()
             c.setFont(font_name, 10)
             tables = (data or {}).get('tables', [])
-            if not tables:
-                c.drawString(left, y, "No structured tables available.")
-            else:
-                for ti, t in enumerate(tables, start=1):
-                    name = t.get('name') or f'Table {ti}'
-                    headers = t.get('headers', [])
-                    rows = t.get('rows', [])
-                    # Bold variant might not exist; keep using the same font
-                    c.setFont(font_name, 11)
-                    c.drawString(left, y, str(name)[:100])
+
+            # Determine if there is meaningful content (headers or any non-empty cell)
+            def _has_content(tbls):
+                for t in tbls or []:
+                    rows = t.get('rows', []) or []
+                    if rows:
+                        for row in rows:
+                            if any((str(cell).strip() if cell is not None else "") for cell in (row or [])):
+                                return True
+                # Header-only with zero rows is not considered content
+                return False
+
+            if not _has_content(tables):
+                return b""
+
+            for ti, t in enumerate(tables or [], start=1):
+                name = t.get('name') or f'Table {ti}'
+                headers = t.get('headers', []) or []
+                rows = t.get('rows', []) or []
+                # Bold variant might not exist; keep using the same font
+                c.setFont(font_name, 11)
+                c.drawString(left, y, str(name)[:100])
+                y -= line_h
+                c.setFont(font_name, 10)
+                if headers:
+                    c.drawString(left, y, " | ".join([str(h) for h in headers])[:180])
                     y -= line_h
-                    c.setFont(font_name, 10)
-                    if headers:
-                        c.drawString(left, y, " | ".join([str(h) for h in headers])[:180])
+                for r in rows:
+                    line = " | ".join([str(x) if x is not None else "" for x in r])
+                    # simple wrapping: split every ~120 chars
+                    while line:
+                        c.drawString(left, y, line[:120])
+                        line = line[120:]
                         y -= line_h
-                    for r in rows:
-                        line = " | ".join([str(x) if x is not None else "" for x in r])
-                        # simple wrapping: split every ~120 chars
-                        while line:
-                            c.drawString(left, y, line[:120])
-                            line = line[120:]
-                            y -= line_h
-                            if y < 20 * mm:
-                                c.showPage(); y = top; c.setFont(font_name, 10)
-                    y -= line_h
-                    if y < 20 * mm:
-                        c.showPage(); y = top; c.setFont(font_name, 10)
+                        if y < 20 * mm:
+                            c.showPage(); y = top; c.setFont(font_name, 10)
+                y -= line_h
+                if y < 20 * mm:
+                    c.showPage(); y = top; c.setFont(font_name, 10)
             c.showPage()
             c.save()
             return buf.getvalue()

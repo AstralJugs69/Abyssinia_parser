@@ -3,7 +3,7 @@ from django.utils import timezone
 
 
 class UserSession(models.Model):
-    """Model to track active user sessions for concurrent user limiting"""
+    """Model to track user sessions and manage cleanup"""
     session_key = models.CharField(max_length=40, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)

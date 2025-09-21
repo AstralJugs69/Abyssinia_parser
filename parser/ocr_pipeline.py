@@ -98,19 +98,19 @@ def _make_model():
 
 
 def _get_gen_config() -> Dict[str, Any]:
-    """Generation config for higher-quality, consistent JSON output."""
+    """Generation config tuned to reliably emit JSON while preserving characters."""
     try:
-        temp = float(os.getenv("GEMINI_TEMPERATURE", "0.15"))
+        temp = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
     except Exception:
-        temp = 0.15
+        temp = 0.1
     try:
-        mot = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "4000"))
+        mot = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "6000"))
     except Exception:
-        mot = 4000
+        mot = 6000
     return {
         "temperature": temp,
-        "top_p": 0.9,
-        "top_k": 40,
+        "top_p": 0.8,
+        "top_k": 20,
         "max_output_tokens": mot,
     }
 
@@ -132,18 +132,23 @@ def structure_with_gemini_vision(images: List[Image.Image]) -> Dict[str, Any]:
     prompt = (
         "You are an expert multilingual document and table parser for banking PDFs and scans.\n"
         "The pages may contain English and Amharic (Ethiopic). Detect languages automatically.\n"
-        "Goal: produce clean, analysis-ready tables that will be exported to Excel.\n\n"
+        "Goal: Extract text EXACTLY as it appears in the document without any corrections or modifications.\n\n"
         "Return STRICT JSON ONLY with this schema:\n"
         "{\n  \"tables\": [ { \"name\": string, \"headers\": [string], \"rows\": [[string]] } ]\n}\n\n"
-        "Instructions (apply when confident; otherwise keep original text):\n"
-        "- Preserve original language in cells; do not transliterate Amharic.\n"
-        "- Fix obvious OCR artifacts (0/O, 1/l, repeated headers) only when highly confident.\n"
-        "- For dates, prefer ISO YYYY-MM-DD if unambiguous; otherwise keep as seen.\n"
-        "- Numbers: normalize digits and decimal separators; keep currency symbol or code with the amount (e.g., ETB 1,234.50).\n"
-        "- Infer headers if missing using common banking columns: Date, Description, Debit, Credit, Balance, Currency.\n"
-        "- Reconstruct irregular tables; merge split cells; ensure consistent column counts; deduplicate.\n"
-        "- If content is key:value, output a two-column table [key, value]. If free-form, output a single-column table, one line per row.\n"
-        "- Sort rows by date if a clear date column exists; otherwise preserve order.\n"
+        "CRITICAL INSTRUCTIONS - CHARACTER PRESERVATION:\n"
+        "- NEVER autocorrect, fix, or modify any characters, words, or text\n"
+        "- NEVER fix what appears to be OCR errors or typos - preserve them exactly\n"
+        "- NEVER transliterate Amharic/Ethiopic characters to Latin script\n"
+        "- NEVER normalize or standardize formatting - keep original spacing, punctuation\n"
+        "- NEVER correct obvious mistakes like 0/O, 1/l, 5/S - transcribe exactly as shown\n"
+        "- NEVER standardize dates or numbers - keep original format (e.g., 12/5/23, not 2023-05-12)\n"
+        "- NEVER add missing punctuation or correct grammar\n"
+        "- NEVER change case (uppercase/lowercase) from what is shown\n\n"
+        "STRUCTURING RULES:\n"
+        "- Copy each character, symbol, and space EXACTLY as it appears in the image\n"
+        "- Preserve all original formatting, spacing, and line breaks\n"
+        "- Maintain original table structure and cell alignment. If headers are missing, use Column1, Column2, ...\n"
+        "- If you CANNOT confidently detect a table, return a single table named 'main' with headers ['text'] and rows = each visual line as a separate row, preserving order.\n"
         "- Output JSON only. No comments or markdown.\n"
     )
 
@@ -159,8 +164,48 @@ def structure_with_gemini_vision(images: List[Image.Image]) -> Dict[str, Any]:
         parts.append(_image_to_part(img))
     parts.append("\n--- IMAGES END ---\n")
 
-    response = model.generate_content(parts, generation_config=_get_gen_config())
-    out = response.text.strip() if hasattr(response, "text") else "{}"
+    # Generate and safely extract text, handling cases where response.text is unavailable
+    try:
+    # Apply permissive safety settings to avoid false-positive blocks on banking docs
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUAL", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
+        response = model.generate_content(parts, generation_config=_get_gen_config(), safety_settings=safety_settings)
+        out = ""
+        # Prefer the quick accessor but guard against exceptions
+        try:
+            out = (response.text or "").strip()
+        except Exception:
+            out = ""
+        if not out:
+            # Attempt to gather text from candidates/parts
+            try:
+                for cand in getattr(response, "candidates", []) or []:
+                    content = getattr(cand, "content", None)
+                    parts_list = getattr(content, "parts", None) if content else None
+                    if not parts_list:
+                        continue
+                    buf: List[str] = []
+                    for p in parts_list:
+                        txt = getattr(p, "text", None)
+                        if txt:
+                            buf.append(txt)
+                        elif isinstance(p, dict) and p.get("text"):
+                            buf.append(str(p["text"]))
+                    if buf:
+                        out = "\n".join(buf)
+                        break
+            except Exception:
+                out = ""
+    except Exception:
+        out = ""
+
+    if not out:
+        return _fallback_structure("")
+
     try:
         data = json.loads(_extract_json(out))
         if not isinstance(data, dict) or "tables" not in data:
